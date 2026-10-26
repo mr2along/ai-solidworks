@@ -15,10 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from .export_pdf import export_dimension_pdf
-from .schemas import PlanRequest, JobResponse
+from .schemas import GenerateRequest, PlanRequest, JobResponse
 from .planner import plan_from_description
 
-app = FastAPI(title="AI CAD Generator", version="0.2.0")
+app = FastAPI(title="AI CAD Agent", version="0.3.0")
 ROOT = Path(__file__).resolve().parents[1]
 FREECAD_SCRIPT = ROOT / "cad" / "freecad_generate.py"
 FREECAD_SMOKE_SCRIPT = ROOT / "cad" / "freecad_smoke.py"
@@ -107,11 +107,10 @@ def create_plan(request: PlanRequest):
 
 
 @app.post("/api/generate")
-def generate_cad(request: PlanRequest):
-    try:
-        plan = plan_from_description(request.description, request.part_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+def generate_cad(request: GenerateRequest):
+    # FastAPI validates the nested plan and its geometric constraints again at
+    # this boundary; free-form descriptions cannot start CAD generation.
+    plan = request.plan
 
     if not _GENERATION_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Đang xử lý một job CAD khác. Vui lòng thử lại sau.")
