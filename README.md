@@ -1,52 +1,50 @@
-# AI SolidWorks — MVP
+---
+title: AI CAD Generator
+emoji: 🧩
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
-Text-to-CAD prototype for SOLIDWORKS on Windows.
+# AI CAD Generator — FreeCAD headless MVP
 
-## Architecture
-- `frontend/`: React + TypeScript web UI for submitting a description and previewing the validated CAD plan.
-- `backend/`: FastAPI job API, CAD-plan schema, validation and deterministic demo planner.
-- `windows_agent/`: Windows-only SOLIDWORKS COM worker using `pywin32`.
-- `tests/`: portable tests for CAD plan validation.
+Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay trên Hugging Face Docker Space.
 
-The backend does **not** control SOLIDWORKS directly. The Windows Agent runs on the logged-in Windows desktop where SOLIDWORKS is installed.
+## Định dạng đầu ra
 
-## MVP scope
-Initial supported operations: rectangular base plate and simple through-holes. The first version intentionally avoids arbitrary AI-generated code. Planner output is validated JSON interpreted by fixed, reviewed CAD functions.
+- `.FCStd`: tài liệu FreeCAD có thể mở và chỉnh sửa.
+- `.step`: trao đổi mô hình 3D.
+- `.stl`: mô hình lưới cho in 3D.
+- `.pdf`: bản vẽ kích thước 2D sơ bộ (không phải bản vẽ chứng nhận sản xuất).
 
-## Quick start — backend
-Python 3.10+ recommended.
+## Phạm vi hiện tại
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn backend.main:app --reload
+Bản đầu chỉ hỗ trợ **tấm chữ nhật với 4 lỗ xuyên**, mô tả đủ chiều dài, chiều rộng, chiều dày, đường kính lỗ và khoảng cách tâm lỗ đến mép. Ví dụ:
+
+`Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm`
+
+Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Mô hình được tạo bằng FreeCAD headless trong container Linux; không cần cài SOLIDWORKS trên máy người dùng. File `.SLDPRT` gốc không được tạo.
+
+## Chạy local bằng Docker
+
+```bash
+docker build -t ai-cad-generator .
+docker run --rm -p 7860:7860 ai-cad-generator
 ```
 
-Open http://127.0.0.1:8000/docs.
+Mở `http://localhost:7860`.
 
-## Quick start — web UI
-In a second terminal:
+## API
 
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+- `GET /health`: kiểm tra ứng dụng.
+- `GET /api/health/cad`: kiểm tra tìm thấy executable FreeCAD.
+- `POST /api/plan`: kiểm tra mô tả và trả về CAD plan JSON.
+- `POST /api/generate`: dựng mô hình và tải ZIP chứa FCStd, STEP, STL, PDF.
 
-Open the local URL printed by Vite. The Vite development server proxies `/api` and `/health` to the backend on port 8000.
+Ví dụ body:
 
-Set `AI_API_KEY` only if you later implement an LLM provider adapter. The current planner is deterministic/demo and does not require an API key.
-
-## Windows Agent prerequisites
-- Windows desktop session with SOLIDWORKS installed and licensed.
-- Python version/bitness compatible with the installed SOLIDWORKS COM environment.
-- Install `pywin32` and test COM access locally.
-- Configure a trusted backend URL and agent token before enabling remote jobs.
-
-**Safety:** Do not expose the Agent listener to the public internet. Use outbound authenticated connections, allowlisted output directories, one CAD job at a time, and human approval before executing generated plans. Do not store API keys in source control.
-
-## Example request
 ```json
 {
   "description": "Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm",
@@ -54,7 +52,9 @@ Set `AI_API_KEY` only if you later implement an LLM provider adapter. The curren
 }
 ```
 
-The demo planner supports this explicit plate pattern. Arbitrary Vietnamese descriptions need an LLM adapter and follow-up questions when dimensions are missing.
+## Giới hạn và an toàn
 
-## Status
-Scaffold only. CAD automation requires validation against the exact installed SOLIDWORKS version and a local Windows test run.
+- Chỉ chạy các thao tác CAD cố định đã định nghĩa; không thực thi mã Python do người dùng nhập.
+- Mỗi job chạy trong thư mục tạm riêng, có giới hạn thời gian và trả file ZIP qua HTTP.
+- Dữ liệu ghi trong filesystem của Space có thể mất khi Space khởi động lại; file tạo ra cần được tải xuống.
+- Chưa xác nhận thành công trên runtime Hugging Face thực tế. Cần theo dõi build log của Space để xác minh gói FreeCAD Debian và tên executable trên image.
