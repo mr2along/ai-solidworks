@@ -1,10 +1,12 @@
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 import zipfile
 import threading
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -19,7 +21,9 @@ from .planner import plan_from_description
 app = FastAPI(title="AI CAD Generator", version="0.2.0")
 ROOT = Path(__file__).resolve().parents[1]
 FREECAD_SCRIPT = ROOT / "cad" / "freecad_generate.py"
+FREECAD_SMOKE_SCRIPT = ROOT / "cad" / "freecad_smoke.py"
 _GENERATION_LOCK = threading.BoundedSemaphore(1)
+logger = logging.getLogger(__name__)
 
 
 def _freecad_command():
@@ -41,6 +45,11 @@ def _freecad_command():
     )
 
 
+def _freecad_argv(command, script):
+    is_gui_binary = Path(command).name.lower() in {"freecad", "freecad.exe"}
+    return [command] + (["--console"] if is_gui_binary else []) + [str(script)]
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "ai-cad-generator"}
@@ -51,8 +60,36 @@ def cad_health():
     try:
         command = _freecad_command()
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"status": "available", "freecad_command": command}
+        logger.error("FreeCAD executable is unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="FreeCAD backend is unavailable.") from exc
+
+    try:
+        result = subprocess.run(
+            _freecad_argv(command, FREECAD_SMOKE_SCRIPT),
+            cwd=ROOT,
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error("FreeCAD runtime probe timed out.")
+        raise HTTPException(status_code=503, detail="FreeCAD runtime check timed out.") from exc
+    except OSError as exc:
+        logger.exception("FreeCAD runtime probe could not start.")
+        raise HTTPException(status_code=503, detail="FreeCAD runtime is unavailable.") from exc
+
+    marker = next(
+        (line for line in result.stdout.splitlines() if line.startswith("FREECAD_RUNTIME_OK ")),
+        None,
+    )
+    if result.returncode != 0 or marker is None:
+        diagnostic = (result.stderr or result.stdout or "No diagnostic output")[-1800:]
+        logger.error("FreeCAD runtime probe failed (exit %s): %s", result.returncode, diagnostic)
+        raise HTTPException(status_code=503, detail="FreeCAD runtime dependencies are unavailable.")
+
+    return {"status": "available", "backend": "freecad", "version": marker.removeprefix("FREECAD_RUNTIME_OK ")}
 
 
 @app.post("/api/plan", response_model=JobResponse)
@@ -80,6 +117,7 @@ def generate_cad(request: PlanRequest):
         raise HTTPException(status_code=429, detail="Đang xử lý một job CAD khác. Vui lòng thử lại sau.")
 
     work_dir = None
+    correlation_id = uuid.uuid4().hex[:12]
     try:
         try:
             command = _freecad_command()
@@ -97,8 +135,7 @@ def generate_cad(request: PlanRequest):
         env = os.environ.copy()
         env["CAD_JOB_CONFIG"] = config_path
         env["CAD_OUTPUT_DIR"] = output_dir
-        is_gui_binary = Path(command).name.lower() in {"freecad", "freecad.exe"}
-        argv = [command] + (["--console"] if is_gui_binary else []) + [str(FREECAD_SCRIPT)]
+        argv = _freecad_argv(command, FREECAD_SCRIPT)
 
         try:
             completed = subprocess.run(
@@ -111,11 +148,26 @@ def generate_cad(request: PlanRequest):
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=504, detail="FreeCAD vượt quá thời gian xử lý cho phép.") from exc
+            logger.error("FreeCAD generation timed out (correlation_id=%s).", correlation_id)
+            raise HTTPException(
+                status_code=504,
+                detail=f"FreeCAD vượt quá thời gian xử lý cho phép. Mã tham chiếu: {correlation_id}.",
+                headers={"X-Correlation-ID": correlation_id},
+            ) from exc
 
         if completed.returncode != 0:
             diagnostic = (completed.stderr or completed.stdout or "Không có log từ FreeCAD")[-1800:]
-            raise HTTPException(status_code=500, detail=f"FreeCAD thất bại (exit {completed.returncode}): {diagnostic}")
+            logger.error(
+                "FreeCAD generation failed (correlation_id=%s, exit=%s): %s",
+                correlation_id,
+                completed.returncode,
+                diagnostic,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"FreeCAD không thể tạo mô hình. Mã tham chiếu: {correlation_id}.",
+                headers={"X-Correlation-ID": correlation_id},
+            )
 
         expected = [
             os.path.join(output_dir, f"{plan.part_name}.FCStd"),
@@ -125,9 +177,16 @@ def generate_cad(request: PlanRequest):
         missing = [path for path in expected if not os.path.isfile(path) or os.path.getsize(path) == 0]
         if missing:
             diagnostic = (completed.stderr or completed.stdout or "")[-1200:]
+            logger.error(
+                "FreeCAD omitted required artifacts (correlation_id=%s, missing=%s): %s",
+                correlation_id,
+                [os.path.basename(path) for path in missing],
+                diagnostic,
+            )
             raise HTTPException(
                 status_code=500,
-                detail="FreeCAD chưa tạo đủ file đầu ra: " + ", ".join(os.path.basename(p) for p in missing) + ". " + diagnostic,
+                detail=f"FreeCAD chưa tạo đủ file đầu ra. Mã tham chiếu: {correlation_id}.",
+                headers={"X-Correlation-ID": correlation_id},
             )
 
         export_dimension_pdf(
@@ -153,10 +212,15 @@ def generate_cad(request: PlanRequest):
         if work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
         raise
-    except Exception as exc:
+    except Exception:
         if work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("Unhandled CAD generation failure (correlation_id=%s).", correlation_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể hoàn tất tạo file CAD. Mã tham chiếu: {correlation_id}.",
+            headers={"X-Correlation-ID": correlation_id},
+        ) from None
     finally:
         _GENERATION_LOCK.release()
 

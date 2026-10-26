@@ -14,7 +14,7 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 
 ## Định dạng đầu ra
 
-- `.FCStd`: tài liệu FreeCAD có thể mở và chỉnh sửa.
+- `.FCStd`: tài liệu FreeCAD có thể mở và chỉnh sửa; executor hiện lưu một `Part::Feature` cùng thuộc tính kích thước, chưa phải Feature Tree tham số đầy đủ.
 - `.step`: trao đổi mô hình 3D.
 - `.stl`: mô hình lưới cho in 3D.
 - `.pdf`: bản vẽ kích thước 2D sơ bộ (không phải bản vẽ chứng nhận sản xuất).
@@ -39,7 +39,7 @@ Mở `http://localhost:7860`.
 ## API
 
 - `GET /health`: kiểm tra ứng dụng.
-- `GET /api/health/cad`: kiểm tra tìm thấy executable FreeCAD.
+- `GET /api/health/cad`: chạy import probe trong FreeCAD runtime (`FreeCAD`, `Part`, `Mesh`, `Sketcher`) và trả trạng thái 503 nếu module không tải được.
 - `POST /api/plan`: kiểm tra mô tả và trả về CAD plan JSON.
 - `POST /api/generate`: dựng mô hình và tải ZIP chứa FCStd, STEP, STL, PDF.
 
@@ -56,5 +56,6 @@ Ví dụ body:
 
 - Chỉ chạy các thao tác CAD cố định đã định nghĩa; không thực thi mã Python do người dùng nhập.
 - Mỗi job chạy trong thư mục tạm riêng, có giới hạn thời gian và trả file ZIP qua HTTP.
+- Docker runtime dùng Python Debian cùng bộ FreeCAD Debian; image build chạy import smoke test dưới tài khoản ứng dụng trước khi đóng gói.
 - Dữ liệu ghi trong filesystem của Space có thể mất khi Space khởi động lại; file tạo ra cần được tải xuống.
 - Chưa xác nhận thành công trên runtime Hugging Face thực tế. Cần theo dõi build log của Space để xác minh gói FreeCAD Debian và tên executable trên image.

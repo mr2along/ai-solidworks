@@ -32,34 +32,10 @@ jobs:
 
   freecad-docker-smoke-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image with FreeCAD
         run: docker build -t ai-cad-generator .
       - name: Start container
-        run: |
-          docker run -d --name ai-cad-generator -p 7860:7860 ai-cad-generator
-          trap 'docker logs ai-cad-generator || true; docker rm -f ai-cad-generator || true' EXIT
-          ready=0
-          for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:7860/health; then
-              ready=1
-              break
-            fi
-            sleep 2
-          done
-          if [ "$ready" -ne 1 ]; then
-            echo "::error::Application did not become healthy within 120 seconds"
-            exit 1
-          fi
-          curl -fsS http://127.0.0.1:7860/api/health/cad
-          status=$(curl -sS -w '%{http_code}' -o /tmp/ci_generate_response             -X POST http://127.0.0.1:7860/api/generate             -H 'Content-Type: application/json'             -d '{"description":"Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm","part_name":"ci_plate"}')
-          if [ "$status" != "200" ]; then
-            echo "::error::POST /api/generate returned HTTP $status"
-            echo "Response body:"
-            cat /tmp/ci_generate_response
-            echo
-            exit 1
-          fi
-          mv /tmp/ci_generate_response /tmp/ci_plate.zip
-          python -c "import zipfile; z=zipfile.ZipFile('/tmp/ci_plate.zip'); names=set(z.namelist()); expected={'ci_plate.FCStd','ci_plate.step','ci_plate.stl','ci_plate.pdf'}; assert expected <= names, f'Missing files: {expected - names}'; print('CAD smoke test passed:', sorted(names))"
+        run: bash .github/scripts/freecad-smoke.sh ai-cad-generator
