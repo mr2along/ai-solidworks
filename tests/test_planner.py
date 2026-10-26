@@ -12,6 +12,7 @@ def test_four_hole_plate_plan():
     assert plan.part_name == "mounting_plate"
     assert plan.features[0].length == 100
     assert len(plan.features[1].positions) == 4
+    assert plan.outputs == ["fcstd", "step", "stl", "pdf"]
 
 
 def test_reject_hole_outside_plate():
