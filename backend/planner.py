@@ -18,7 +18,7 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
     edge = number(r"cách mép\s*(\d+(?:\.\d+)?)", "khoảng cách tâm lỗ đến mép")
     count_match = re.search(r"(\d+)\s*lỗ", text)
     if not count_match or int(count_match.group(1)) != 4:
-        raise ValueError("MVP demo hiện chỉ hỗ trợ mẫu có 4 lỗ. Hãy ghi rõ '4 lỗ'.")
+        raise ValueError("MVP hiện chỉ hỗ trợ tấm chữ nhật có 4 lỗ. Hãy ghi rõ '4 lỗ'.")
     positions = [
         {"x": edge, "y": edge},
         {"x": length - edge, "y": edge},
@@ -33,5 +33,5 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
             {"id": "base", "type": "extruded_plate", "length": length, "width": width, "thickness": thickness},
             {"id": "holes", "type": "through_holes", "diameter": diameter, "positions": positions},
         ],
-        "outputs": ["sldprt", "step"],
+        "outputs": ["fcstd", "step", "stl", "pdf"],
     })
