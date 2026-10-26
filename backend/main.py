@@ -4,8 +4,8 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import threading
 from pathlib import Path
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -19,20 +19,25 @@ from .planner import plan_from_description
 app = FastAPI(title="AI CAD Generator", version="0.2.0")
 ROOT = Path(__file__).resolve().parents[1]
 FREECAD_SCRIPT = ROOT / "cad" / "freecad_generate.py"
+_GENERATION_LOCK = threading.BoundedSemaphore(1)
 
 
 def _freecad_command():
     configured = os.getenv("FREECAD_CMD", "FreeCADCmd")
-    candidates = [configured, "FreeCADCmd", "freecadcmd", "FreeCAD", "freecad",
-                  "/usr/lib/freecad/bin/FreeCADCmd",
-                  "/usr/lib/freecad/bin/freecadcmd",
-                  "/usr/lib/freecad/bin/FreeCAD"]
+    candidates = [
+        configured, "FreeCADCmd", "freecadcmd", "freecadcmd-python3",
+        "FreeCAD", "freecad",
+        "/usr/lib/freecad/bin/FreeCADCmd",
+        "/usr/lib/freecad/bin/freecadcmd",
+        "/usr/lib/freecad/bin/freecadcmd-python3",
+        "/usr/lib/freecad/bin/FreeCAD",
+    ]
     for candidate in candidates:
         resolved = shutil.which(candidate) if not candidate.startswith("/") else candidate
         if resolved and os.path.isfile(resolved) and os.access(resolved, os.X_OK):
             return resolved
     raise FileNotFoundError(
-        "Không tìm thấy FreeCAD headless. Kiểm tra gói freecad trong Docker image."
+        "Không tìm thấy FreeCAD headless. Kiểm tra gói freecad-python3 trong Docker image."
     )
 
 
@@ -71,38 +76,46 @@ def generate_cad(request: PlanRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if not _GENERATION_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Đang xử lý một job CAD khác. Vui lòng thử lại sau.")
+
+    work_dir = None
     try:
-        command = _freecad_command()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            command = _freecad_command()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    work_dir = tempfile.mkdtemp(prefix="ai-cad-")
-    output_dir = os.path.join(work_dir, "outputs")
-    os.makedirs(output_dir, exist_ok=True)
-    config_path = os.path.join(work_dir, "plan.json")
-    archive_path = os.path.join(work_dir, f'{plan.part_name}-cad-files.zip')
-    with open(config_path, "w", encoding="utf-8") as handle:
-        json.dump(plan.model_dump(mode="json"), handle, ensure_ascii=False)
+        work_dir = tempfile.mkdtemp(prefix="ai-cad-")
+        output_dir = os.path.join(work_dir, "outputs")
+        os.makedirs(output_dir, exist_ok=True)
+        config_path = os.path.join(work_dir, "plan.json")
+        archive_path = os.path.join(work_dir, f"{plan.part_name}-cad-files.zip")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            json.dump(plan.model_dump(mode="json"), handle, ensure_ascii=False)
 
-    env = os.environ.copy()
-    env["CAD_JOB_CONFIG"] = config_path
-    env["CAD_OUTPUT_DIR"] = output_dir
-    is_gui_binary = Path(command).name.lower() in {"freecad", "freecad.exe"}
-    argv = [command] + (["--console"] if is_gui_binary else []) + [str(FREECAD_SCRIPT)]
+        env = os.environ.copy()
+        env["CAD_JOB_CONFIG"] = config_path
+        env["CAD_OUTPUT_DIR"] = output_dir
+        is_gui_binary = Path(command).name.lower() in {"freecad", "freecad.exe"}
+        argv = [command] + (["--console"] if is_gui_binary else []) + [str(FREECAD_SCRIPT)]
 
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=work_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=int(os.getenv("CAD_MAX_RUNTIME_SECONDS", "90")),
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=work_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=int(os.getenv("CAD_MAX_RUNTIME_SECONDS", "90")),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail="FreeCAD vượt quá thời gian xử lý cho phép.") from exc
+
         if completed.returncode != 0:
             diagnostic = (completed.stderr or completed.stdout or "Không có log từ FreeCAD")[-1800:]
-            raise RuntimeError(f"FreeCAD thất bại (exit {completed.returncode}): {diagnostic}")
+            raise HTTPException(status_code=500, detail=f"FreeCAD thất bại (exit {completed.returncode}): {diagnostic}")
 
         expected = [
             os.path.join(output_dir, f"{plan.part_name}.FCStd"),
@@ -112,7 +125,10 @@ def generate_cad(request: PlanRequest):
         missing = [path for path in expected if not os.path.isfile(path) or os.path.getsize(path) == 0]
         if missing:
             diagnostic = (completed.stderr or completed.stdout or "")[-1200:]
-            raise RuntimeError("FreeCAD chưa tạo đủ file đầu ra: " + ", ".join(os.path.basename(p) for p in missing) + ". " + diagnostic)
+            raise HTTPException(
+                status_code=500,
+                detail="FreeCAD chưa tạo đủ file đầu ra: " + ", ".join(os.path.basename(p) for p in missing) + ". " + diagnostic,
+            )
 
         export_dimension_pdf(
             plan.model_dump(mode="json"),
@@ -133,12 +149,16 @@ def generate_cad(request: PlanRequest):
             filename=f"{plan.part_name}-cad-files.zip",
             background=BackgroundTask(shutil.rmtree, work_dir, ignore_errors=True),
         )
-    except subprocess.TimeoutExpired as exc:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        raise HTTPException(status_code=504, detail="FreeCAD vượt quá thời gian xử lý cho phép.") from exc
+    except HTTPException:
+        if work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        raise
     except Exception as exc:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        if work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        _GENERATION_LOCK.release()
 
 
 frontend_dist = ROOT / "frontend" / "dist"
