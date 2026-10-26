@@ -1,0 +1,71 @@
+name: Publish to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-cad-agent-space
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate app before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run backend tests
+        run: python -m pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Build Docker image
+        run: docker build -t ai-cad-generator .
+
+  publish:
+    name: Publish to Hugging Face Space
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Space files
+        run: |
+          mkdir -p "${RUNNER_TEMP}/space-publish"
+          cp -a Dockerfile README.md requirements.txt backend cad frontend "${RUNNER_TEMP}/space-publish/"
+
+      - name: Install Hugging Face CLI
+        run: |
+          python -m pip install --upgrade "huggingface_hub>=1.19.0"
+          hf --help
+
+      - name: Publish Space files using Trusted Publisher (OIDC)
+        env:
+          HF_OIDC_RESOURCE: spaces/Mrlongpro/CAD_Agent
+        run: |
+          hf upload Mrlongpro/CAD_Agent "${RUNNER_TEMP}/space-publish" . \
+            --repo-type space \
+            --commit-message "Deploy ai-solidworks ${GITHUB_SHA::7}"
