@@ -3,7 +3,7 @@
 Text-to-CAD prototype for SOLIDWORKS on Windows.
 
 ## Architecture
-- `frontend/`: React + TypeScript web UI (planned; MVP API can be used directly first).
+- `frontend/`: React + TypeScript web UI for submitting a description and previewing the validated CAD plan.
 - `backend/`: FastAPI job API, CAD-plan schema, validation and deterministic demo planner.
 - `windows_agent/`: Windows-only SOLIDWORKS COM worker using `pywin32`.
 - `tests/`: portable tests for CAD plan validation.
@@ -24,6 +24,17 @@ uvicorn backend.main:app --reload
 ```
 
 Open http://127.0.0.1:8000/docs.
+
+## Quick start — web UI
+In a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite. The Vite development server proxies `/api` and `/health` to the backend on port 8000.
 
 Set `AI_API_KEY` only if you later implement an LLM provider adapter. The current planner is deterministic/demo and does not require an API key.
 
