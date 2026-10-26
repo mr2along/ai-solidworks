@@ -25,7 +25,9 @@ class CADPlan(BaseModel):
     part_name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     units: Literal["mm"] = "mm"
     features: list[Feature] = Field(min_length=1, max_length=20)
-    outputs: list[Literal["sldprt", "step"]] = Field(default_factory=lambda: ["sldprt", "step"])
+    outputs: list[Literal["step", "stl", "fcstd", "pdf"]] = Field(
+        default_factory=lambda: ["fcstd", "step", "stl", "pdf"]
+    )
 
     @model_validator(mode="after")
     def validate_feature_sequence(self):
