@@ -17,7 +17,7 @@ try:
     assert math.isfinite(1.0)
     assert datetime.datetime.now().year >= 2020
     assert json.loads('{"ok": true}') == {"ok": True}
-    assert Part.makeBox(1, 1, 1).Volume == 1
+    assert math.isclose(Part.makeBox(1, 1, 1).Volume, 1.0, rel_tol=0.0, abs_tol=1e-9)
     assert Mesh.Mesh is not None
     assert Sketcher is not None
     print(f"FREECAD_RUNTIME_OK FreeCAD {version}", flush=True)
