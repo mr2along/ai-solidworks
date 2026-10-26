@@ -10,12 +10,11 @@ FROM python:3.11-slim-bookworm AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FREECAD_CMD=FreeCADCmd \
+    FREECAD_CMD=/usr/lib/freecad/bin/freecadcmd-python3 \
     CAD_MAX_RUNTIME_SECONDS=90
 RUN apt-get update && apt-get install -y --no-install-recommends \
       freecad freecad-python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && (command -v FreeCADCmd || command -v freecadcmd || find /usr -type f -iname '*freecad*cmd*' -print -quit) \
     && useradd --create-home --uid 1000 appuser
 WORKDIR /app
 COPY requirements.txt ./
