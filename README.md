@@ -1,5 +1,5 @@
 ---
-title: AI CAD Generator
+title: AI CAD Agent
 emoji: 🧩
 colorFrom: blue
 colorTo: indigo
@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# AI CAD Generator — FreeCAD headless MVP
+# AI CAD Agent — FreeCAD headless MVP
 
 Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay trên Hugging Face Docker Space.
 
@@ -21,9 +21,11 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 
 ## Phạm vi hiện tại
 
-Bản đầu chỉ hỗ trợ **tấm chữ nhật với 4 lỗ xuyên**, mô tả đủ chiều dài, chiều rộng, chiều dày, đường kính lỗ và khoảng cách tâm lỗ đến mép. Ví dụ:
+Bản đầu chỉ hỗ trợ **tấm chữ nhật với 4 lỗ xuyên**, mô tả đủ chiều dài, chiều rộng, chiều dày, đường kính lỗ và khoảng cách tâm lỗ đến mép. Parser hỗ trợ mẫu tiếng Việt và tiếng Anh đã kiểm thử, quy đổi mm, cm, m và inch sang mm. Ví dụ:
 
 `Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm`
+
+`Make a plate 10 cm long, 60 mm wide, 5 mm thick, with four through holes Ø6 mm, 10 mm from each edge`
 
 Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Mô hình được tạo bằng FreeCAD headless trong container Linux; không cần cài SOLIDWORKS trên máy người dùng. File `.SLDPRT` gốc không được tạo.
 
@@ -40,10 +42,10 @@ Mở `http://localhost:7860`.
 
 - `GET /health`: kiểm tra ứng dụng.
 - `GET /api/health/cad`: chạy import probe trong FreeCAD runtime (`FreeCAD`, `Part`, `Mesh`, `Sketcher`) và trả trạng thái 503 nếu module không tải được.
-- `POST /api/plan`: kiểm tra mô tả và trả về CAD plan JSON.
-- `POST /api/generate`: dựng mô hình và tải ZIP chứa FCStd, STEP, STL, PDF.
+- `POST /api/plan`: kiểm tra mô tả và trả về CAD plan JSON gồm feature, tham số, ràng buộc, giả định, cảnh báo và kết quả validation.
+- `POST /api/generate`: nhận `{"plan": <plan>}` từ bước preview; server xác thực lại plan trước khi gọi FreeCAD. Gọi `/api/plan` trước, sau đó gửi trường `plan` trong response; request cũ chỉ có mô tả cần chuyển sang flow hai bước này.
 
-Ví dụ body:
+Gọi `POST /api/plan` với mô tả:
 
 ```json
 {
@@ -52,10 +54,35 @@ Ví dụ body:
 }
 ```
 
+Response có thuộc tính `plan`; sau khi rà soát preview, gửi thuộc tính đó tới `POST /api/generate`:
+
+```json
+{
+  "plan": {
+    "schema_version": "1.0",
+    "part_name": "mounting_plate",
+    "units": "mm",
+    "features": [
+      {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+      {"id": "holes", "type": "through_holes", "diameter": 6, "positions": [
+        {"x": 10, "y": 10}, {"x": 90, "y": 10}, {"x": 10, "y": 50}, {"x": 90, "y": 50}
+      ]}
+    ],
+    "outputs": ["fcstd", "step", "stl", "pdf"],
+    "assumptions": ["Khoảng cách mép được hiểu là từ tâm lỗ đến cạnh tấm."],
+    "warnings": ["PDF đầu ra là bản vẽ minh họa, không phải bản vẽ sản xuất được chứng nhận."],
+    "backend": "freecad"
+  }
+}
+```
+
+Giao diện gửi CAD plan đã hiển thị sau khi người dùng xác nhận. Nếu mô tả hoặc tên part đổi, preview cũ bị xóa; các kích thước chỉnh sửa được kiểm tra lại tại API. Gửi mô tả trực tiếp tới `/api/generate` không còn được chấp nhận; client cũ cần chuyển sang flow hai bước.
+
 ## Giới hạn và an toàn
 
 - Chỉ chạy các thao tác CAD cố định đã định nghĩa; không thực thi mã Python do người dùng nhập.
 - Mỗi job chạy trong thư mục tạm riêng, có giới hạn thời gian và trả file ZIP qua HTTP.
 - Docker runtime dùng Python Debian cùng bộ FreeCAD Debian; image build chạy import smoke test dưới tài khoản ứng dụng trước khi đóng gói.
 - Dữ liệu ghi trong filesystem của Space có thể mất khi Space khởi động lại; file tạo ra cần được tải xuống.
-- Chưa xác nhận thành công trên runtime Hugging Face thực tế. Cần theo dõi build log của Space để xác minh gói FreeCAD Debian và tên executable trên image.
+- FreeCAD 0.20.2 đã được xác nhận trên GitHub Docker smoke test và Hugging Face Space sau deploy; bài generation trên Space đã trả HTTP 200 và các file trong ZIP đã qua kiểm tra định dạng.
+- Bộ parser xác định đã kiểm thử các mẫu mô tả tiếng Việt và tiếng Anh cho tấm chữ nhật 4 lỗ; các feature khác, job queue, xác thực người dùng và SOLIDWORKS Agent chưa được xác minh/triển khai.
