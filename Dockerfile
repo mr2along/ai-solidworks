@@ -27,6 +27,12 @@ COPY --chown=appuser:appuser backend/ ./backend/
 COPY --chown=appuser:appuser cad/ ./cad/
 COPY --from=frontend-build --chown=appuser:appuser /build/frontend/dist ./frontend/dist
 USER appuser
-RUN "$FREECAD_CMD" /app/cad/freecad_smoke.py
+RUN set -e; \
+    if ! "$FREECAD_CMD" /app/cad/freecad_smoke.py > /tmp/freecad-smoke.log 2>&1; then \
+      cat /tmp/freecad-smoke.log; exit 1; \
+    fi; \
+    cat /tmp/freecad-smoke.log; \
+    grep -Fq "FREECAD_RUNTIME_OK " /tmp/freecad-smoke.log; \
+    rm /tmp/freecad-smoke.log
 EXPOSE 7860
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "7860"]
