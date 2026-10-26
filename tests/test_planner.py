@@ -29,3 +29,56 @@ def test_reject_hole_outside_plate():
 def test_missing_dimensions_is_actionable():
     with pytest.raises(ValueError, match="chiều dài"):
         plan_from_description("Vẽ một tấm thép có lỗ")
+
+
+def test_reject_duplicate_through_holes():
+    with pytest.raises(ValidationError, match="positions must be unique"):
+        CADPlan.model_validate({
+            "part_name": "duplicate_holes",
+            "features": [
+                {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+                {
+                    "id": "holes",
+                    "type": "through_holes",
+                    "diameter": 6,
+                    "positions": [{"x": 10, "y": 10}, {"x": 10, "y": 10}],
+                },
+            ],
+        })
+
+
+def test_reject_feature_types_the_executor_would_ignore():
+    with pytest.raises(ValidationError, match="Only one extruded_plate"):
+        CADPlan.model_validate({
+            "part_name": "ignored_feature",
+            "features": [
+                {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+                {"id": "second_base", "type": "extruded_plate", "length": 20, "width": 20, "thickness": 5},
+            ],
+        })
+
+
+def test_reject_tangent_hole_and_holes_that_overlap():
+    base = {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5}
+    with pytest.raises(ValidationError, match="outside the plate"):
+        CADPlan.model_validate({
+            "part_name": "tangent_hole",
+            "features": [
+                base,
+                {"id": "holes", "type": "through_holes", "diameter": 6, "positions": [{"x": 3, "y": 10}]},
+            ],
+        })
+
+    with pytest.raises(ValidationError, match="must not overlap or touch"):
+        CADPlan.model_validate({
+            "part_name": "overlap_holes",
+            "features": [
+                base,
+                {
+                    "id": "holes",
+                    "type": "through_holes",
+                    "diameter": 6,
+                    "positions": [{"x": 10, "y": 10}, {"x": 15, "y": 10}],
+                },
+            ],
+        })

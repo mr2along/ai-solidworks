@@ -1,3 +1,4 @@
+import math
 from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -10,7 +11,7 @@ class Hole(BaseModel):
 
 class Feature(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: str
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     type: Literal["extruded_plate", "through_holes"]
     length: float | None = Field(default=None, gt=0, le=2000)
     width: float | None = Field(default=None, gt=0, le=2000)
@@ -33,6 +34,10 @@ class CADPlan(BaseModel):
     def validate_feature_sequence(self):
         if self.features[0].type != "extruded_plate":
             raise ValueError("The first feature must be extruded_plate")
+        if len(self.features) > 2 or any(feature.type != "through_holes" for feature in self.features[1:]):
+            raise ValueError("Only one extruded_plate and one optional through_holes feature are supported")
+        if len({feature.id for feature in self.features}) != len(self.features):
+            raise ValueError("Feature IDs must be unique")
         base = self.features[0]
         if base.length is None or base.width is None or base.thickness is None:
             raise ValueError("extruded_plate requires length, width, thickness")
@@ -40,14 +45,22 @@ class CADPlan(BaseModel):
             if feature.type == "through_holes":
                 if feature.diameter is None or not feature.positions:
                     raise ValueError("through_holes requires diameter and positions")
+                if any(value is not None for value in (feature.length, feature.width, feature.thickness)):
+                    raise ValueError("through_holes cannot contain plate dimensions")
                 if feature.diameter >= min(base.length, base.width):
                     raise ValueError("Hole diameter must be smaller than plate dimensions")
                 radius = feature.diameter / 2
-                for hole in feature.positions:
-                    if not (radius <= hole.x <= base.length - radius):
+                hole_coordinates = [(hole.x, hole.y) for hole in feature.positions]
+                if len(set(hole_coordinates)) != len(hole_coordinates):
+                    raise ValueError("Through-hole positions must be unique")
+                for index, hole in enumerate(feature.positions):
+                    if not (radius < hole.x < base.length - radius):
                         raise ValueError("Hole X coordinate lies outside the plate")
-                    if not (radius <= hole.y <= base.width - radius):
+                    if not (radius < hole.y < base.width - radius):
                         raise ValueError("Hole Y coordinate lies outside the plate")
+                    for other in feature.positions[index + 1:]:
+                        if math.dist((hole.x, hole.y), (other.x, other.y)) <= feature.diameter:
+                            raise ValueError("Through holes must not overlap or touch")
         return self
 
 
