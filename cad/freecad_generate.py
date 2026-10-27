@@ -77,7 +77,12 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
     for radius, expected_centers in expected_cylinders.items():
         actual_centers = _cylindrical_centers(shape, radius, tolerance)
         if len(actual_centers) != len(expected_centers):
-            raise RuntimeError("Generated through-cut cylindrical face count does not match the CAD plan.")
+            actual = [(round(center.x, 6), round(center.y, 6), round(center.z, 6)) for center in actual_centers]
+            raise RuntimeError(
+                "Generated through-cut cylindrical face count does not match the CAD plan "
+                f"(radius={radius:g}, expected={len(expected_centers)}, actual={len(actual_centers)}, "
+                f"expected_centers={expected_centers}, actual_centers={actual})."
+            )
         unmatched = list(actual_centers)
         for x, y in expected_centers:
             match = next(
