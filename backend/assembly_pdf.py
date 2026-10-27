@@ -78,6 +78,8 @@ def _component_instances(plan: dict) -> list[dict]:
             rotation_z = int(placement["rotation_z"])
             rotated = _rotated_plan(part_plan, rotation_z)
             rotated_base = rotated["features"][0]
+            bosses = next((feature for feature in rotated["features"][1:] if feature["type"] == "circular_bosses"), None)
+            thickness = float(rotated_base["thickness"])
             instances.append({
                 "item": item,
                 "item_index": item_index,
@@ -89,7 +91,8 @@ def _component_instances(plan: dict) -> list[dict]:
                 "z": float(placement["z"]),
                 "length": float(rotated_base["length"]),
                 "width": float(rotated_base["width"]),
-                "thickness": float(rotated_base["thickness"]),
+                "thickness": thickness,
+                "height": thickness + (float(bosses["boss_height"]) if bosses else 0.0),
                 "rotation_z": rotation_z,
                 "color": LINE_COLORS[item_index % len(LINE_COLORS)],
                 "face_colors": PART_COLORS[item_index % len(PART_COLORS)],
@@ -104,7 +107,7 @@ def _assembly_bounds(instances: list[dict]) -> tuple[float, float, float, float,
         min(instance["z"] for instance in instances),
         max(instance["x"] + instance["length"] for instance in instances),
         max(instance["y"] + instance["width"] for instance in instances),
-        max(instance["z"] + instance["thickness"] for instance in instances),
+        max(instance["z"] + instance["height"] for instance in instances),
     )
 
 
@@ -117,7 +120,7 @@ def _isometric_projection(
         for instance in instances
         for x in (instance["x"], instance["x"] + instance["length"])
         for y in (instance["y"], instance["y"] + instance["width"])
-        for z in (instance["z"], instance["z"] + instance["thickness"])
+        for z in (instance["z"], instance["z"] + instance["height"])
     ]
     min_x = min(point[0] for point in projected_points)
     max_x = max(point[0] for point in projected_points)
@@ -165,7 +168,9 @@ def _draw_bom(pdf: canvas.Canvas, plan: dict, x: float, top: float, width: float
     for item in sorted(plan["items"], key=lambda value: value["item_number"]):
         base = item["part_plan"]["features"][0]
         part_name = item["part_plan"]["part_name"]
-        size = f'{float(base["length"]):g} x {float(base["width"]):g} x {float(base["thickness"]):g}'
+        bosses = next((feature for feature in item["part_plan"]["features"][1:] if feature["type"] == "circular_bosses"), None)
+        total_height = float(base["thickness"]) + (float(bosses["boss_height"]) if bosses else 0.0)
+        size = f'{float(base["length"]):g} x {float(base["width"]):g} x {total_height:g}'
         pdf.setFillColor(INK)
         pdf.setFont("Helvetica", 7.5)
         pdf.drawString(columns[0], row_y, str(item["item_number"]))
@@ -222,6 +227,19 @@ def _elevation_details(part_plan: dict, axis: str) -> tuple[list[float], list[tu
     return hidden_positions, hidden_ranges, hidden_rectangles
 
 
+def _boss_elevation_rectangles(part_plan: dict, axis: str) -> list[tuple[float, float, float, float]]:
+    bosses = next((feature for feature in part_plan["features"][1:] if feature["type"] == "circular_bosses"), None)
+    if not bosses:
+        return []
+    base = part_plan["features"][0]
+    radius = float(bosses["boss_diameter"]) / 2
+    top_z = float(base["thickness"]) + float(bosses["boss_height"])
+    return [
+        (float(position[axis]) - radius, float(position[axis]) + radius, float(base["thickness"]), top_z)
+        for position in bosses["positions"]
+    ]
+
+
 def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
     """Render an assembly PDF from explicit plate plans and user-supplied poses."""
     instances = _component_instances(plan)
@@ -247,6 +265,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
         holes = next((feature for feature in iso_plan["features"][1:] if feature["type"] == "through_holes"), None)
         slots = next((feature for feature in iso_plan["features"][1:] if feature["type"] == "through_slots"), None)
         pockets = next((feature for feature in iso_plan["features"][1:] if feature["type"] == "rectangular_pockets"), None)
+        bosses = next((feature for feature in iso_plan["features"][1:] if feature["type"] == "circular_bosses"), None)
         _draw_isometric(
             pdf,
             float(base["length"]),
@@ -256,6 +275,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
             slots,
             pockets,
             area,
+            bosses=bosses,
             projection=projection,
             placement=(instance["x"], instance["y"], instance["z"], instance["rotation_z"]),
             face_colors=instance["face_colors"],
@@ -265,7 +285,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
         center = _iso_point(
             instance["x"] + instance["length"] / 2,
             instance["y"] + instance["width"] / 2,
-            instance["z"] + instance["thickness"] / 2,
+            instance["z"] + instance["height"] / 2,
             projection[0],
             projection[1],
             projection[2],
@@ -318,6 +338,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
         holes = next((feature for feature in part_plan["features"][1:] if feature["type"] == "through_holes"), None)
         slots = next((feature for feature in part_plan["features"][1:] if feature["type"] == "through_slots"), None)
         pockets = next((feature for feature in part_plan["features"][1:] if feature["type"] == "rectangular_pockets"), None)
+        bosses = next((feature for feature in part_plan["features"][1:] if feature["type"] == "circular_bosses"), None)
         color = instance["color"]
         _draw_top_view(
             pdf,
@@ -329,6 +350,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
             holes,
             slots,
             pockets,
+            bosses,
             fill_part=False,
             stroke_color=color,
         )
@@ -344,6 +366,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
             x_hidden,
             hidden_ranges=x_ranges,
             hidden_rectangles=x_rectangles,
+            visible_rectangles=_boss_elevation_rectangles(part_plan, "x"),
             stroke_color=color,
         )
 
@@ -358,6 +381,7 @@ def export_assembly_pdf(plan: dict, destination: str | BinaryIO) -> None:
             y_hidden,
             hidden_ranges=y_ranges,
             hidden_rectangles=y_rectangles,
+            visible_rectangles=_boss_elevation_rectangles(part_plan, "y"),
             stroke_color=color,
         )
 

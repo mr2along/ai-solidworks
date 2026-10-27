@@ -16,6 +16,50 @@ def test_four_hole_plate_plan():
     assert plan.outputs == ["fcstd", "step", "stl", "pdf"]
 
 
+def test_vietnamese_circular_bosses_are_planned_with_explicit_centers():
+    plan = plan_from_description(
+        "Vẽ tấm dài 120 mm rộng 80 mm dày 10 mm, 4 lỗ Ø6 cách mép 10 mm, "
+        "2 boss tròn Ø20 cao 8 mm tại x=60 mm, y=20 mm và x=60 mm, y=60 mm",
+        "boss_plate",
+    )
+
+    assert plan.schema_version == "1.3"
+    assert [feature.type for feature in plan.features] == ["extruded_plate", "circular_bosses", "through_holes"]
+    bosses = plan.features[1]
+    assert (bosses.boss_diameter, bosses.boss_height) == (20, 8)
+    assert [position.model_dump() for position in bosses.positions] == [
+        {"x": 60, "y": 20}, {"x": 60, "y": 60}
+    ]
+    assert plan.parameters["boss_count"] == 2
+    assert "bosses_clear_of_cuts" in plan.constraints
+
+
+def test_english_circular_boss_can_be_placed_at_plate_center():
+    plan = plan_from_description(
+        "Plate length 120 mm width 80 mm thickness 10 mm with one circular boss "
+        "diameter 20 mm height 8 mm at the center of the plate",
+        "center_boss_plate",
+    )
+
+    boss = plan.features[1]
+    assert plan.schema_version == "1.3"
+    assert boss.type == "circular_bosses"
+    assert boss.positions[0].model_dump() == {"x": 60, "y": 40}
+    assert "Boss tròn được đặt tại tâm hình chữ nhật của tấm theo mô tả." in plan.assumptions
+
+
+def test_boss_parser_requires_complete_centers_and_matching_count():
+    with pytest.raises(ValueError, match="cần có tâm X/Y"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with a circular boss diameter 20 mm height 8 mm"
+        )
+    with pytest.raises(ValueError, match="không khớp"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with two circular bosses diameter 20 mm "
+            "height 8 mm at x=60 mm, y=40 mm"
+        )
+
+
 def test_centered_through_slot_is_combined_with_existing_hole_pattern():
     plan = plan_from_description(
         "Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm và "
@@ -85,6 +129,53 @@ def test_slot_geometry_rejects_outside_and_colliding_features():
                 slot,
             ],
         })
+
+
+def test_boss_schema_rejects_legacy_version_outside_and_overlapping_centers():
+    base = {"id": "base", "type": "extruded_plate", "length": 120, "width": 80, "thickness": 10}
+    bosses = {
+        "id": "bosses", "type": "circular_bosses", "boss_diameter": 20, "boss_height": 8,
+        "positions": [{"x": 60, "y": 40}],
+    }
+    with pytest.raises(ValidationError, match="requires CAD Plan schema version 1.3"):
+        CADPlan.model_validate({"schema_version": "1.2", "part_name": "old_boss", "features": [base, bosses]})
+
+    with pytest.raises(ValidationError, match="Boss X extent lies outside"):
+        CADPlan.model_validate({
+            "schema_version": "1.3", "part_name": "outside_boss",
+            "features": [base, {**bosses, "positions": [{"x": 10, "y": 40}]}],
+        })
+
+    with pytest.raises(ValidationError, match="Circular bosses must not overlap or touch"):
+        CADPlan.model_validate({
+            "schema_version": "1.3", "part_name": "overlap_bosses",
+            "features": [base, {**bosses, "positions": [{"x": 40, "y": 40}, {"x": 55, "y": 40}]}],
+        })
+
+
+def test_boss_schema_rejects_intersections_with_holes_slots_and_pockets():
+    base = {"id": "base", "type": "extruded_plate", "length": 120, "width": 80, "thickness": 10}
+    bosses = {
+        "id": "bosses", "type": "circular_bosses", "boss_diameter": 20, "boss_height": 8,
+        "positions": [{"x": 60, "y": 40}],
+    }
+    holes = {"id": "holes", "type": "through_holes", "diameter": 6, "positions": [{"x": 69, "y": 40}]}
+    with pytest.raises(ValidationError, match="bosses must be clear of through holes"):
+        CADPlan.model_validate({"schema_version": "1.3", "part_name": "boss_hole", "features": [base, bosses, holes]})
+
+    slot = {
+        "id": "slot", "type": "through_slots", "slot_length": 30, "slot_width": 8,
+        "orientation": "x", "positions": [{"x": 60, "y": 52}],
+    }
+    with pytest.raises(ValidationError, match="bosses must be clear of through slots"):
+        CADPlan.model_validate({"schema_version": "1.3", "part_name": "boss_slot", "features": [base, bosses, slot]})
+
+    pocket = {
+        "id": "pocket", "type": "rectangular_pockets", "pocket_length": 20,
+        "pocket_width": 12, "pocket_depth": 3, "positions": [{"x": 60, "y": 50}],
+    }
+    with pytest.raises(ValidationError, match="bosses must be clear of rectangular pockets"):
+        CADPlan.model_validate({"schema_version": "1.3", "part_name": "boss_pocket", "features": [base, bosses, pocket]})
 
 
 def test_slot_dimensions_and_unsupported_blind_slot_are_rejected():

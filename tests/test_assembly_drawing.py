@@ -155,6 +155,32 @@ def test_assembly_geometry_bounds_include_rotated_placed_components():
     assert _assembly_bounds(instances) == (0.0, 0.0, 0.0, 100.0, 60.0, 10.0)
 
 
+def test_assembly_drawing_includes_boss_height_and_transforms_its_center():
+    plan = _assembly_plan()
+    boss_part = plan["items"][1]["part_plan"]
+    boss_part["schema_version"] = "1.3"
+    boss_part["features"].append({
+        "id": "bosses",
+        "type": "circular_bosses",
+        "boss_diameter": 6,
+        "boss_height": 8,
+        "positions": [{"x": 10, "y": 5}],
+    })
+    plan = AssemblyDrawingRequest.model_validate({"plan": plan}).plan.model_dump(mode="json")
+    instances = _component_instances(plan)
+
+    boss = instances[1]["plan"]["features"][1]
+    assert boss["positions"] == [{"x": 15, "y": 10}]
+    assert instances[1]["height"] == 13
+    assert _assembly_bounds(instances) == (0.0, 0.0, 0.0, 100.0, 60.0, 18.0)
+
+    response = create_assembly_drawing(AssemblyDrawingRequest.model_validate({"plan": plan}))
+    assert response.status_code == 200
+    assert response.body.startswith(b"%PDF-")
+    assert b"20 x 20 x 13" in response.body
+    assert b"Z: 18 mm" in response.body
+
+
 def test_assembly_drawing_endpoint_returns_two_page_pdf_with_bom_and_views():
     request = AssemblyDrawingRequest.model_validate({"plan": _assembly_plan()})
 

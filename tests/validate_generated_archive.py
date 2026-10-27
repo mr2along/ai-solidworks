@@ -47,8 +47,12 @@ def validate_archive(path: str) -> None:
         raise ValueError("PDF drawing does not document the planned rounded through-slot")
     if b"Blind rectangular pockets: 1 x 20 x 12 mm; depth 2 mm" not in pdf:
         raise ValueError("PDF drawing does not document the planned blind rectangular pocket")
+    if b"Raised circular bosses: 1 x dia. 20 mm; height 8 mm" not in pdf:
+        raise ValueError("PDF drawing does not document the planned raised circular boss")
+    if b"B1 center: X 60, Y 20 mm" not in pdf:
+        raise ValueError("PDF drawing does not document the planned boss center")
 
-    print("Verified FCStd, STEP, STL and PDF artifact contents, including through-slot and blind-pocket geometry")
+    print("Verified FCStd, STEP, STL and PDF artifact contents, including boss, through-slot and blind-pocket geometry")
 
 
 if __name__ == "__main__":

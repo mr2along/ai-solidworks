@@ -13,11 +13,13 @@ config_path = os.environ["CAD_JOB_CONFIG"]
 output_dir = os.environ["CAD_OUTPUT_DIR"]
 
 
-def _cylindrical_centers(shape, radius, tolerance):
+def _cylindrical_centers(shape, radius, tolerance, *, z_min, z_max):
     centers = []
     for face in shape.Faces:
         surface = face.Surface
         if not hasattr(surface, "Radius") or not hasattr(surface, "Center") or not hasattr(surface, "Axis"):
+            continue
+        if face.BoundBox.ZMin < z_min - tolerance or face.BoundBox.ZMax > z_max + tolerance:
             continue
         axis = surface.Axis
         if (
@@ -42,7 +44,10 @@ def _unique_xy(points, tolerance):
     return unique
 
 
-def validate_shape(shape, length, width, thickness, holes_feature, slots_feature=None, pockets_feature=None):
+def validate_shape(
+    shape, length, width, thickness, holes_feature,
+    bosses_feature=None, slots_feature=None, pockets_feature=None,
+):
     if shape.isNull() or not shape.isValid() or shape.Volume <= 0:
         raise RuntimeError("FreeCAD produced an invalid or empty solid.")
     if len(shape.Solids) != 1:
@@ -50,15 +55,19 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
 
     tolerance = 1e-6
     bounds = shape.BoundBox
-    expected_bounds = (length, width, thickness)
+    boss_height = float(bosses_feature["boss_height"]) if bosses_feature else 0.0
+    expected_bounds = (length, width, thickness + boss_height)
     actual_bounds = (bounds.XLength, bounds.YLength, bounds.ZLength)
-    for label, actual, expected in zip(("length", "width", "thickness"), actual_bounds, expected_bounds):
+    for label, actual, expected in zip(("length", "width", "height"), actual_bounds, expected_bounds):
         if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=tolerance):
             raise RuntimeError(f"Generated {label} does not match the CAD plan.")
 
     positions = holes_feature["positions"] if holes_feature else []
     diameter = float(holes_feature["diameter"]) if holes_feature else 0.0
     expected_volume = length * width * thickness
+    if bosses_feature:
+        boss_radius = float(bosses_feature["boss_diameter"]) / 2.0
+        expected_volume += len(bosses_feature["positions"]) * math.pi * boss_radius**2 * boss_height
     if holes_feature:
         expected_volume -= len(positions) * math.pi * (diameter / 2.0) ** 2 * thickness
     expected_slot_centers = []
@@ -82,7 +91,7 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
         expected_volume -= len(pockets_feature["positions"]) * pocket_length * pocket_width * pocket_depth
     volume_tolerance = max(1e-5, abs(expected_volume) * 1e-8)
     if not math.isclose(shape.Volume, expected_volume, rel_tol=0.0, abs_tol=volume_tolerance):
-        raise RuntimeError("Generated solid volume does not match the planned through cuts.")
+        raise RuntimeError("Generated solid volume does not match the planned feature geometry.")
 
     expected_cylinders = {}
     if positions:
@@ -92,7 +101,9 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
     if slots_feature:
         expected_cylinders.setdefault(float(slots_feature["slot_width"]) / 2.0, []).extend(expected_slot_centers)
     for radius, expected_centers in expected_cylinders.items():
-        actual_faces = _cylindrical_centers(shape, radius, tolerance)
+        actual_faces = _cylindrical_centers(
+            shape, radius, tolerance, z_min=0.0, z_max=thickness
+        )
         actual_centers = _unique_xy(((center.x, center.y) for center in actual_faces), tolerance)
         expected_centers = _unique_xy(expected_centers, tolerance)
         if len(actual_centers) != len(expected_centers):
@@ -114,6 +125,23 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
             if match is None:
                 raise RuntimeError("A generated through-cut center does not match the CAD plan.")
             unmatched.pop(match)
+
+    if bosses_feature:
+        boss_radius = float(bosses_feature["boss_diameter"]) / 2.0
+        expected_area = math.pi * boss_radius**2
+        area_tolerance = max(1e-5, expected_area * 1e-8)
+        top_z = thickness + boss_height
+        for position in bosses_feature["positions"]:
+            expected_x, expected_y = float(position["x"]), float(position["y"])
+            top_face_found = any(
+                math.isclose(face.CenterOfMass.x, expected_x, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.CenterOfMass.y, expected_y, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.CenterOfMass.z, top_z, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.Area, expected_area, rel_tol=0.0, abs_tol=area_tolerance)
+                for face in shape.Faces
+            )
+            if not top_face_found:
+                raise RuntimeError("A circular boss top face does not match its planned center, diameter and height.")
 
     if pockets_feature:
         expected_area = float(pockets_feature["pocket_length"]) * float(pockets_feature["pocket_width"])
@@ -143,9 +171,22 @@ def main():
     thickness = float(base["thickness"])
 
     holes_feature = next((item for item in features[1:] if item["type"] == "through_holes"), None)
+    bosses_feature = next((item for item in features[1:] if item["type"] == "circular_bosses"), None)
     slots_feature = next((item for item in features[1:] if item["type"] == "through_slots"), None)
     pockets_feature = next((item for item in features[1:] if item["type"] == "rectangular_pockets"), None)
     shape = Part.makeBox(length, width, thickness)
+    if bosses_feature:
+        radius = float(bosses_feature["boss_diameter"]) / 2.0
+        height = float(bosses_feature["boss_height"])
+        for position in bosses_feature["positions"]:
+            cylinder = Part.makeCylinder(
+                radius,
+                height,
+                App.Vector(float(position["x"]), float(position["y"]), thickness),
+                App.Vector(0, 0, 1),
+            )
+            shape = shape.fuse(cylinder)
+        shape = shape.removeSplitter()
     if holes_feature:
         radius = float(holes_feature["diameter"]) / 2.0
         for position in holes_feature["positions"]:
@@ -205,7 +246,10 @@ def main():
             )
             shape = shape.cut(cutter)
 
-    validate_shape(shape, length, width, thickness, holes_feature, slots_feature, pockets_feature)
+    validate_shape(
+        shape, length, width, thickness, holes_feature,
+        bosses_feature, slots_feature, pockets_feature,
+    )
 
     name = plan["part_name"]
     doc = App.newDocument(name)
@@ -218,6 +262,13 @@ def main():
     obj.PlateWidth = width
     obj.addProperty("App::PropertyLength", "PlateThickness", "Dimensions")
     obj.PlateThickness = thickness
+    if bosses_feature:
+        obj.addProperty("App::PropertyLength", "BossDiameter", "Dimensions")
+        obj.BossDiameter = float(bosses_feature["boss_diameter"])
+        obj.addProperty("App::PropertyLength", "BossHeight", "Dimensions")
+        obj.BossHeight = float(bosses_feature["boss_height"])
+        obj.addProperty("App::PropertyInteger", "BossCount", "Dimensions")
+        obj.BossCount = len(bosses_feature["positions"])
     if holes_feature:
         obj.addProperty("App::PropertyLength", "HoleDiameter", "Dimensions")
         obj.HoleDiameter = float(holes_feature["diameter"])

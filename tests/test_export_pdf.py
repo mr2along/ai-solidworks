@@ -91,3 +91,23 @@ def test_pdf_shows_blind_pocket_in_isometric_and_views(tmp_path):
     assert b"Blind rectangular pockets: 1 x 30 x 15 mm; depth 2 mm" in pdf
     assert b"P1 center: X 50, Y 30 mm" in pdf
     assert b"Dashed edges indicate cut boundaries hidden in edge views." in pdf
+
+
+def test_pdf_shows_raised_circular_bosses_in_isometric_and_projections(tmp_path):
+    plan = _plate_plan()
+    plan["features"].append({
+        "id": "bosses",
+        "type": "circular_bosses",
+        "boss_diameter": 20,
+        "boss_height": 8,
+        "positions": [{"x": 50, "y": 30}],
+    })
+    destination = tmp_path / "bossed-plate-drawing.pdf"
+
+    export_dimension_pdf(plan, str(destination))
+
+    pdf = destination.read_bytes()
+    assert pdf.startswith(b"%PDF-")
+    assert b"Raised circular bosses: 1 x dia. 20 mm; height 8 mm" in pdf
+    assert b"B1 center: X 50, Y 30 mm" in pdf
+    assert b"FRONT VIEW" in pdf and b"RIGHT VIEW" in pdf

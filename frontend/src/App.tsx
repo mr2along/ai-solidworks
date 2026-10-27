@@ -3,11 +3,13 @@ import { useState } from "react";
 type Position = { x?: number; y?: number };
 type Feature = {
   id: string;
-  type: "extruded_plate" | "through_holes" | "through_slots" | "rectangular_pockets";
+  type: "extruded_plate" | "circular_bosses" | "through_holes" | "through_slots" | "rectangular_pockets";
   length?: number | null;
   width?: number | null;
   thickness?: number | null;
   diameter?: number | null;
+  boss_diameter?: number | null;
+  boss_height?: number | null;
   positions?: Position[];
   slot_length?: number | null;
   slot_width?: number | null;
@@ -45,6 +47,16 @@ function deriveParameters(features: Feature[]) {
     holes.positions.forEach((position, index) => {
       if (position.x !== undefined) result[`hole_${index + 1}_x_mm`] = position.x;
       if (position.y !== undefined) result[`hole_${index + 1}_y_mm`] = position.y;
+    });
+  }
+  const bosses = features.find(feature => feature.type === "circular_bosses");
+  if (bosses?.boss_diameter !== null && bosses?.boss_diameter !== undefined) result.boss_diameter_mm = bosses.boss_diameter;
+  if (bosses?.boss_height !== null && bosses?.boss_height !== undefined) result.boss_height_mm = bosses.boss_height;
+  if (bosses?.positions) {
+    result.boss_count = bosses.positions.length;
+    bosses.positions.forEach((position, index) => {
+      if (position.x !== undefined) result[`boss_${index + 1}_x_mm`] = position.x;
+      if (position.y !== undefined) result[`boss_${index + 1}_y_mm`] = position.y;
     });
   }
   const slots = features.find(feature => feature.type === "through_slots");
@@ -96,7 +108,7 @@ export default function App() {
 
   function updateFeatureNumber(
     featureIndex: number,
-    field: "length" | "width" | "thickness" | "diameter" | "slot_length" | "slot_width" | "pocket_length" | "pocket_width" | "pocket_depth",
+    field: "length" | "width" | "thickness" | "diameter" | "boss_diameter" | "boss_height" | "slot_length" | "slot_width" | "pocket_length" | "pocket_width" | "pocket_depth",
     rawValue: string
   ) {
     const value = rawValue === "" ? undefined : Number(rawValue);
@@ -315,7 +327,7 @@ export default function App() {
 
       <section className="panel">
         <h2>Mô tả chi tiết cơ khí</h2>
-        <p className="muted">Hỗ trợ tấm chữ nhật, 4 lỗ xuyên, rãnh xuyên bo tròn và hốc chữ nhật mù. Hãy ghi rõ kích thước, độ sâu, vị trí tâm và rà soát CAD Plan trước khi tạo.</p>
+        <p className="muted">Hỗ trợ tấm chữ nhật, 4 lỗ xuyên, boss tròn, rãnh xuyên bo tròn và hốc chữ nhật mù. Hãy ghi rõ kích thước, độ sâu, vị trí tâm và rà soát CAD Plan trước khi tạo.</p>
         <label htmlFor="description">Yêu cầu thiết kế</label>
         <textarea id="description" disabled={loading || generating} value={description} onChange={e => { setDescription(e.target.value); clearPreview(); }} rows={4} />
         <label htmlFor="partName">Tên chi tiết / file</label>
@@ -352,6 +364,23 @@ export default function App() {
                 <input disabled={loading || generating} type="number" min="0" step="any" value={feature[key] ?? ""} onChange={e => updateFeatureNumber(featureIndex, key, e.target.value)} />
               </label>
             ))}
+          </fieldset>
+        ) : feature.type === "circular_bosses" ? (
+          <fieldset className="featureEditor" key={feature.id}>
+            <legend>Feature {featureIndex + 1}: Boss tròn nhô</legend>
+            <label>Đường kính (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.boss_diameter ?? ""} onChange={e => updateFeatureNumber(featureIndex, "boss_diameter", e.target.value)} />
+            </label>
+            <label>Chiều cao nhô (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.boss_height ?? ""} onChange={e => updateFeatureNumber(featureIndex, "boss_height", e.target.value)} />
+            </label>
+            <div className="holeGrid"><strong>Boss</strong><strong>Tâm X (mm)</strong><strong>Tâm Y (mm)</strong>
+              {feature.positions?.map((position, bossIndex) => <div className="holeRow" key={bossIndex}>
+                <span>{bossIndex + 1}</span>
+                <input disabled={loading || generating} aria-label={`Boss ${bossIndex + 1}, tọa độ X`} type="number" min="0" step="any" value={position.x ?? ""} onChange={e => updateCutPosition(featureIndex, bossIndex, "x", e.target.value)} />
+                <input disabled={loading || generating} aria-label={`Boss ${bossIndex + 1}, tọa độ Y`} type="number" min="0" step="any" value={position.y ?? ""} onChange={e => updateCutPosition(featureIndex, bossIndex, "y", e.target.value)} />
+              </div>)}
+            </div>
           </fieldset>
         ) : feature.type === "through_holes" ? (
           <fieldset className="featureEditor" key={feature.id}>
@@ -444,7 +473,11 @@ export default function App() {
                   </select></label>
                   {item.placements.length > 1 && <button className="smallButton dangerButton removePose" disabled={assemblyGenerating} onClick={() => { setAssemblyItems(items => items.map((row, index) => index !== itemIndex ? row : { ...row, placements: row.placements.filter((_, index) => index !== poseIndex) })); setAssemblySuccess(""); }}>Xóa vị trí</button>}
                 </div>)}
-                <p className="muted">Kích thước chi tiết gốc: {base.length} × {base.width} × {base.thickness} mm.</p>
+                <p className="muted">Kích thước chi tiết gốc: {base.length} × {base.width} × {base.thickness} mm
+                  {item.part_plan.features.find(feature => feature.type === "circular_bosses")?.boss_height
+                    ? `, cao tổng ${base.thickness! + item.part_plan.features.find(feature => feature.type === "circular_bosses")!.boss_height!} mm gồm boss.`
+                    : "."}
+                </p>
               </fieldset>;
             })}
           </div>
@@ -455,7 +488,7 @@ export default function App() {
         {assemblyError && <div className="error" role="alert">{assemblyError}</div>}
         {assemblySuccess && <div className="successMessage" role="status">{assemblySuccess}</div>}
       </section>
-      <footer>FreeCAD tạo file chi tiết trong Space. Bản vẽ lắp PDF hiện dùng các CAD Plan dạng tấm được hỗ trợ, với vị trí do người dùng nhập; chưa tạo assembly native hoặc kiểm tra va chạm, mặt lắp và dung sai. Parser hiện hỗ trợ tấm chữ nhật, 4 lỗ xuyên, rãnh xuyên bo tròn và hốc chữ nhật mù. FCStd chi tiết hiện lưu một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ.</footer>
+      <footer>FreeCAD tạo file chi tiết trong Space. Parser hỗ trợ tấm chữ nhật, 4 lỗ xuyên, boss tròn, rãnh xuyên bo tròn và hốc chữ nhật mù. Bản vẽ lắp PDF dùng các CAD Plan dạng tấm với vị trí do người dùng nhập; chưa tạo assembly native hoặc kiểm tra va chạm, mặt lắp và dung sai. FCStd hiện lưu một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ.</footer>
     </main>
   );
 }

@@ -224,8 +224,75 @@ def _rectangular_pocket(text: str, length: float, width: float):
     }, assumptions
 
 
+def _circular_bosses(text: str, length: float, width: float):
+    markers = ("cylindrical boss", "circular boss", "gờ trụ", "bệ trụ", "gờ tròn", "boss")
+    marker = next((item for item in markers if item in text), None)
+    if marker is None:
+        if "gờ" in text or "boss" in text:
+            raise ValueError("Hiện chỉ hỗ trợ gờ trụ tròn; hãy ghi boss/bệ trụ có đường kính và chiều cao.")
+        return None, []
+
+    boss_index = text.find(marker)
+    boss_text = _feature_clause(text, boss_index, ("rãnh", "slot", "hốc", "pocket", "lỗ", "hole"))
+    diameter, diameter_unit = _diameter(boss_text)
+    height, height_unit = _dimension(boss_text, "cao|height|high|tall", "chiều cao boss")
+
+    unit_pattern = r"millimeters?|millimetres?|mm|centimeters?|centimetres?|cm|meters?|metres?|m|inches|inch|in"
+    pair_pattern = re.compile(
+        rf"\bx\s*[:=]\s*(?P<x>-?\d+(?:[.,]\d+)?)\s*(?P<x_unit>{unit_pattern})?"
+        rf"\s*[,;]\s*y\s*[:=]\s*(?P<y>-?\d+(?:[.,]\d+)?)\s*(?P<y_unit>{unit_pattern})?",
+        re.IGNORECASE,
+    )
+    positions = []
+    for match in pair_pattern.finditer(boss_text):
+        x_unit = (match.group("x_unit") or "mm").lower()
+        y_unit = (match.group("y_unit") or "mm").lower()
+        positions.append({
+            "x": float(match.group("x").replace(",", ".")) * UNIT_TO_MM[x_unit],
+            "y": float(match.group("y").replace(",", ".")) * UNIT_TO_MM[y_unit],
+        })
+
+    centered = any(token in boss_text for token in (
+        "ở giữa tấm", "chính giữa tấm", "giữa tấm", "centered in the plate",
+        "at the center of the plate", "at the centre of the plate",
+        "center of the plate", "centre of the plate",
+    ))
+    if not positions and centered:
+        positions = [{"x": length / 2, "y": width / 2}]
+    elif not positions:
+        raise ValueError("Boss tròn cần có tâm X/Y rõ ràng hoặc ghi rõ đặt giữa tấm.")
+
+    count_match = re.search(
+        r"\b(?P<count>\d+|one|two|three|four|five|six|một|hai|ba|bốn|năm|sáu)\s+"
+        r"(?:circular\s+|cylindrical\s+)?boss(?:es)?\b",
+        text,
+    )
+    if count_match:
+        count_names = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+            "một": 1, "hai": 2, "ba": 3, "bốn": 4, "năm": 5, "sáu": 6,
+        }
+        stated_count = count_match.group("count")
+        expected_count = int(stated_count) if stated_count.isdigit() else count_names[stated_count]
+        if expected_count != len(positions):
+            raise ValueError("Số boss được nêu không khớp với số vị trí tâm X/Y.")
+
+    assumptions = []
+    if not (diameter_unit and height_unit):
+        assumptions.append("Kích thước boss không ghi đơn vị được hiểu là mm.")
+    if centered and len(positions) == 1:
+        assumptions.append("Boss tròn được đặt tại tâm hình chữ nhật của tấm theo mô tả.")
+    return {
+        "id": "bosses",
+        "type": "circular_bosses",
+        "boss_diameter": diameter,
+        "boss_height": height,
+        "positions": positions,
+    }, assumptions
+
+
 def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
-    """Parse the allowlisted plate, through-cut and blind rectangular-pocket subset."""
+    """Parse the allowlisted plate, boss, through-cut and blind-pocket subset."""
     text = unicodedata.normalize("NFKC", description).lower()
     unsupported = {
         "lỗ ren": "lỗ ren/threaded hole",
@@ -236,7 +303,6 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
         "rãnh mù": "rãnh mù/blind slot",
         "counterbore": "lỗ bậc/counterbore",
         "countersink": "lỗ vát/countersink",
-        "boss": "gờ/boss",
         "trục": "trục/shaft",
         "shaft": "trục/shaft",
         "revolve": "tiện xoay/revolve",
@@ -257,6 +323,11 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
     assumptions = []
     if not all((length_unit, width_unit, thickness_unit)):
         assumptions.append("Kích thước không ghi đơn vị được hiểu là mm.")
+
+    bosses_feature, boss_assumptions = _circular_bosses(text, length, width)
+    if bosses_feature:
+        features.append(bosses_feature)
+        assumptions.extend(boss_assumptions)
 
     has_holes = bool(re.search(r"\b(?:lỗ|holes?)\b", text))
     if has_holes:
@@ -288,7 +359,7 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
         assumptions.extend(pocket_assumptions)
 
     return CADPlan.model_validate({
-        "schema_version": "1.2",
+        "schema_version": "1.3" if bosses_feature else "1.2",
         "part_name": part_name,
         "units": "mm",
         "features": features,

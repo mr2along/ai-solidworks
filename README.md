@@ -22,7 +22,7 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 
 ## Phạm vi hiện tại
 
-Parser xác định hiện hỗ trợ **tấm chữ nhật, đúng 4 lỗ xuyên, tối đa 20 rãnh xuyên bo tròn cùng kích thước và nhóm hốc chữ nhật mù**. Rãnh cần nêu chiều dài tổng thể, chiều rộng, hướng và vị trí tâm; có thể ghi “ở giữa tấm” hoặc tọa độ tâm X/Y. Khi không ghi hướng, rãnh ở giữa sẽ theo cạnh dài của tấm và CAD Plan công bố giả định này. Hốc chữ nhật cần có chiều dài theo X, chiều rộng theo Y, độ sâu và tọa độ tâm (hoặc ghi ở giữa tấm); độ sâu phải nhỏ hơn chiều dày, và hốc không được chạm/giao với lỗ hoặc rãnh xuyên. Parser hiện tạo một hốc từ mô tả; có thể nhân bản vị trí trong CAD Plan để tạo thêm hốc cùng kích thước. Hốc tròn, hốc có góc bo, lỗ ren, lỗ bậc, bo góc, trục và feature khác đều bị từ chối thay vì bị bỏ qua.
+Parser xác định hiện hỗ trợ **tấm chữ nhật, đúng 4 lỗ xuyên, boss tròn, tối đa 20 rãnh xuyên bo tròn cùng kích thước và nhóm hốc chữ nhật mù**. Có thể chỉ rõ nhiều boss với cùng đường kính/chiều cao và tọa độ tâm; boss phải nằm trọn trong tấm và không giao với lỗ, rãnh hoặc hốc. Rãnh cần nêu chiều dài tổng thể, chiều rộng, hướng và vị trí tâm; có thể ghi “ở giữa tấm” hoặc tọa độ tâm X/Y. Khi không ghi hướng, rãnh ở giữa sẽ theo cạnh dài của tấm và CAD Plan công bố giả định này. Hốc chữ nhật cần có chiều dài theo X, chiều rộng theo Y, độ sâu và tọa độ tâm (hoặc ghi ở giữa tấm); độ sâu phải nhỏ hơn chiều dày, và hốc không được chạm/giao với lỗ hoặc rãnh xuyên. Parser hiện tạo một hốc từ mô tả; có thể nhân bản vị trí trong CAD Plan để tạo thêm hốc cùng kích thước. Hốc tròn, hốc có góc bo, lỗ ren, lỗ bậc, bo góc, trục và feature khác đều bị từ chối thay vì bị bỏ qua.
 
 Các kích thước mm, cm, m và inch được đổi sang mm. Ví dụ:
 
@@ -34,7 +34,9 @@ Các kích thước mm, cm, m và inch được đổi sang mm. Ví dụ:
 
 `Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm có hốc chữ nhật dài 20 mm rộng 12 mm sâu 2 mm, tâm hốc tại x=50 mm, y=50 mm`
 
-Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Rãnh có đầu tròn; “dài” là kích thước tổng thể bao gồm hai đầu bán nguyệt. Hốc chỉ có cạnh thẳng, song song trục X/Y. Mô hình được dựng bằng FreeCAD headless trong container Linux. `.FCStd` hiện chứa một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ; sản phẩm không tạo file `.SLDPRT`.
+`Vẽ tấm dài 120 mm rộng 80 mm dày 10 mm, 4 lỗ Ø6 cách mép 10 mm, boss tròn Ø20 cao 8 mm tại x=60 mm, y=20 mm`
+
+Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Phiên bản CAD Plan 1.3 bổ sung nhóm `circular_bosses`; các plan cũ tiếp tục dùng schema 1.0–1.2. Rãnh có đầu tròn; “dài” là kích thước tổng thể bao gồm hai đầu bán nguyệt. Hốc chỉ có cạnh thẳng, song song trục X/Y. Mô hình được dựng bằng FreeCAD headless trong container Linux. Boss, lỗ, rãnh và hốc hiện được hợp/cắt thành một solid; `.FCStd` lưu solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ; sản phẩm không tạo file `.SLDPRT`. PDF chi tiết là bản vẽ minh họa có hình trục đo và sáu hình chiếu, không phải bản vẽ sản xuất được chứng nhận.
 
 ## Chạy local bằng Docker
 
@@ -141,4 +143,4 @@ Giao diện gửi CAD plan đã hiển thị sau khi người dùng xác nhận.
 - Docker runtime dùng Python Debian cùng bộ FreeCAD Debian; image build chạy import smoke test dưới tài khoản ứng dụng trước khi đóng gói.
 - Dữ liệu ghi trong filesystem của Space có thể mất khi Space khởi động lại; file tạo ra cần được tải xuống.
 - FreeCAD 0.20.2 đã được xác nhận trên GitHub Docker smoke test và Hugging Face Space sau deploy; bài generation trên Space đã trả HTTP 200 và các file trong ZIP đã qua kiểm tra định dạng.
-- Bộ parser có kiểm thử cho tấm 4 lỗ, rãnh xuyên bo tròn và hốc chữ nhật mù. CI FreeCAD smoke test dựng tổ hợp các feature này và xác minh thể tích, mặt đáy hốc cùng artifact trước khi publish. Job queue, xác thực người dùng và SOLIDWORKS Agent chưa được triển khai.
+- Bộ parser có kiểm thử cho tấm 4 lỗ, boss tròn, rãnh xuyên bo tròn và hốc chữ nhật mù. CI FreeCAD smoke test dựng tổ hợp các feature này và xác minh thể tích, mặt trên boss, mặt đáy hốc cùng artifact trước khi publish. Job queue, xác thực người dùng và SOLIDWORKS Agent chưa được triển khai.
