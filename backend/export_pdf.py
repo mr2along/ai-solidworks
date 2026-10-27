@@ -122,6 +122,7 @@ def _draw_top_view(
     scale: float,
     holes: dict | None,
     slots: dict | None = None,
+    pockets: dict | None = None,
     *,
     mirror_x: bool = False,
 ) -> None:
@@ -153,6 +154,22 @@ def _draw_top_view(
                 slots,
                 lambda x, y: (x0 + (center_x + x) * scale, y0 + (center_y + y) * scale),
                 fill=True,
+            )
+    if pockets:
+        pocket_length = float(pockets["pocket_length"])
+        pocket_width = float(pockets["pocket_width"])
+        for position in pockets["positions"]:
+            center_x = float(position["x"])
+            center_y = float(position["y"])
+            if mirror_x:
+                center_x = length - center_x
+            pdf.rect(
+                x0 + (center_x - pocket_length / 2) * scale,
+                y0 + (center_y - pocket_width / 2) * scale,
+                pocket_length * scale,
+                pocket_width * scale,
+                stroke=1,
+                fill=0,
             )
     pdf.restoreState()
 
@@ -257,6 +274,7 @@ def _draw_isometric(
     thickness: float,
     holes: dict | None,
     slots: dict | None,
+    pockets: dict | None,
     area: tuple[float, float, float, float],
 ) -> None:
     area_x, area_y, area_w, area_h = area
@@ -331,6 +349,30 @@ def _draw_isometric(
             _draw_capsule(pdf, slots, project_bottom, fill=False)
             pdf.restoreState()
 
+    if pockets:
+        pocket_length = float(pockets["pocket_length"])
+        pocket_width = float(pockets["pocket_width"])
+        pocket_depth = float(pockets["pocket_depth"])
+        floor_z = thickness - pocket_depth
+        for position in pockets["positions"]:
+            x0 = float(position["x"]) - pocket_length / 2
+            x1 = float(position["x"]) + pocket_length / 2
+            y0 = float(position["y"]) - pocket_width / 2
+            y1 = float(position["y"]) + pocket_width / 2
+            corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+            _polygon(pdf, [p(x, y, floor_z) for x, y in corners], HexColor("#D8E1E8"))
+            _polygon(pdf, [p(x0, y0, thickness), p(x1, y0, thickness),
+                           p(x1, y0, floor_z), p(x0, y0, floor_z)], FRONT_FACE)
+            _polygon(pdf, [p(x1, y0, thickness), p(x1, y1, thickness),
+                           p(x1, y1, floor_z), p(x1, y0, floor_z)], RIGHT_FACE)
+            pdf.saveState()
+            pdf.setStrokeColor(INK)
+            pdf.setLineWidth(0.8)
+            opening = [p(x, y, thickness) for x, y in corners]
+            for start, end in zip(opening, opening[1:] + opening[:1]):
+                pdf.line(*start, *end)
+            pdf.restoreState()
+
     # Reassert the visible top and side edges over the hole graphics.
     pdf.saveState()
     pdf.setStrokeColor(INK)
@@ -365,6 +407,7 @@ def _draw_elevation(
     *,
     mirror: bool = False,
     hidden_ranges: Iterable[tuple[float, float]] = (),
+    hidden_rectangles: Iterable[tuple[float, float, float, float]] = (),
 ) -> None:
     width_pt, height_pt = horizontal_length * scale, thickness * scale
     x0, y0 = center_x - width_pt / 2, center_y - height_pt / 2
@@ -383,6 +426,12 @@ def _draw_elevation(
             start, end = horizontal_length - end, horizontal_length - start
         left, right = x0 + start * scale, x0 + end * scale
         pdf.rect(left, y0, right - left, height_pt, stroke=1, fill=0)
+    for start, end, bottom_z, top_z in hidden_rectangles:
+        if mirror:
+            start, end = horizontal_length - end, horizontal_length - start
+        left, right = x0 + start * scale, x0 + end * scale
+        bottom, top = y0 + bottom_z * scale, y0 + top_z * scale
+        pdf.rect(left, bottom, right - left, top - bottom, stroke=1, fill=0)
     pdf.setDash()
     pdf.restoreState()
 
@@ -407,6 +456,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     thickness = float(base["thickness"])
     holes = next((item for item in plan["features"][1:] if item["type"] == "through_holes"), None)
     slots = next((item for item in plan["features"][1:] if item["type"] == "through_slots"), None)
+    pockets = next((item for item in plan["features"][1:] if item["type"] == "rectangular_pockets"), None)
 
     page_w, page_h = landscape(A4)
     pdf = canvas.Canvas(destination, pagesize=(page_w, page_h), pageCompression=0)
@@ -415,7 +465,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
 
     _draw_page_header(pdf, page_w, page_h, "3D MODEL AND DIMENSIONED TOP VIEW", plan["part_name"])
     _view_label(pdf, 235, page_h - 94, "ISOMETRIC VIEW")
-    _draw_isometric(pdf, length, width, thickness, holes, slots, (55, 125, 365, 325))
+    _draw_isometric(pdf, length, width, thickness, holes, slots, pockets, (55, 125, 365, 325))
 
     _view_label(
         pdf,
@@ -427,7 +477,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     top_scale = min(292 / length, 170 / width)
     top_x = 478
     top_y = 308
-    _draw_top_view(pdf, top_x, top_y, length, width, top_scale, holes, slots)
+    _draw_top_view(pdf, top_x, top_y, length, width, top_scale, holes, slots, pockets)
     _dimension_horizontal(pdf, top_x, top_x + length * top_scale, top_y, top_y - 22, f"L = {length:g} mm")
     _dimension_vertical(
         pdf,
@@ -462,6 +512,16 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
             lines.append(f"  S{index} center: X {float(position['x']):g}, Y {float(position['y']):g} mm")
     else:
         lines.append("No through slots")
+    if pockets:
+        lines.append(
+            f"Blind rectangular pockets: {len(pockets['positions'])} x "
+            f"{float(pockets['pocket_length']):g} x {float(pockets['pocket_width']):g} mm; "
+            f"depth {float(pockets['pocket_depth']):g} mm"
+        )
+        for index, position in enumerate(pockets["positions"][:6], start=1):
+            lines.append(f"  P{index} center: X {float(position['x']):g}, Y {float(position['y']):g} mm")
+    else:
+        lines.append("No blind rectangular pockets")
     for index, line in enumerate(lines, start=1):
         pdf.drawString(specs_x, specs_y - index * 12, line)
     pdf.setFont("Helvetica-Oblique", 7.5)
@@ -475,7 +535,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     pdf.drawString(
         38,
         page_h - 86,
-        "One consistent view scale. Dashed edges indicate through-cut boundaries hidden in edge views.",
+        "One consistent view scale. Dashed edges indicate cut boundaries hidden in edge views.",
     )
 
     holes_list = holes["positions"] if holes else []
@@ -499,6 +559,23 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
                 for position in slots["positions"]
             ]
 
+    pocket_x_rectangles = []
+    pocket_y_rectangles = []
+    if pockets:
+        pocket_floor = thickness - float(pockets["pocket_depth"])
+        pocket_half_length = float(pockets["pocket_length"]) / 2
+        pocket_half_width = float(pockets["pocket_width"]) / 2
+        pocket_x_rectangles = [
+            (float(position["x"]) - pocket_half_length,
+             float(position["x"]) + pocket_half_length, pocket_floor, thickness)
+            for position in pockets["positions"]
+        ]
+        pocket_y_rectangles = [
+            (float(position["y"]) - pocket_half_width,
+             float(position["y"]) + pocket_half_width, pocket_floor, thickness)
+            for position in pockets["positions"]
+        ]
+
     scale = min(2.1, (page_w - 76 - 3 * 22) / (2 * (length + width)))
     gap = 22
     # Third-angle style row: left, front, right, and rear; top and bottom align with front.
@@ -517,20 +594,20 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
 
     _view_label(pdf, left_center, 300, "LEFT VIEW", "looking toward +X")
     _draw_elevation(pdf, left_center, front_y, width, thickness, scale, y_edges, mirror=True,
-                    hidden_ranges=y_slot_ranges)
+                    hidden_ranges=y_slot_ranges, hidden_rectangles=pocket_y_rectangles)
     _view_label(pdf, front_center, top_y_center + width * scale / 2 + 17, "TOP VIEW")
     _draw_top_view(pdf, front_center - length * scale / 2, top_y_center - width * scale / 2,
-                   length, width, scale, holes, slots)
+                   length, width, scale, holes, slots, pockets)
     _view_label(pdf, right_center, 300, "RIGHT VIEW", "looking toward -X")
     _draw_elevation(pdf, right_center, front_y, width, thickness, scale, y_edges,
-                    hidden_ranges=y_slot_ranges)
+                    hidden_ranges=y_slot_ranges, hidden_rectangles=pocket_y_rectangles)
     _view_label(pdf, rear_center, 300, "REAR VIEW", "looking toward -Y")
     _draw_elevation(pdf, rear_center, front_y, length, thickness, scale, x_edges, mirror=True,
-                    hidden_ranges=x_slot_ranges)
+                    hidden_ranges=x_slot_ranges, hidden_rectangles=pocket_x_rectangles)
 
     _view_label(pdf, front_center, 300, "FRONT VIEW", "looking toward +Y")
     _draw_elevation(pdf, front_center, front_y, length, thickness, scale, x_edges,
-                    hidden_ranges=x_slot_ranges)
+                    hidden_ranges=x_slot_ranges, hidden_rectangles=pocket_x_rectangles)
     _view_label(pdf, front_center, bottom_y_center - width * scale / 2 - 20, "BOTTOM VIEW", "looking toward +Z")
     _draw_top_view(pdf, front_center - length * scale / 2, bottom_y_center - width * scale / 2,
                    length, width, scale, holes, slots, mirror_x=True)

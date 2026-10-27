@@ -21,7 +21,7 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 
 ## Phạm vi hiện tại
 
-Parser xác định hiện hỗ trợ **tấm chữ nhật, đúng 4 lỗ xuyên và tối đa 20 rãnh xuyên hai đầu bo tròn cùng kích thước**. Rãnh cần nêu chiều dài tổng thể, chiều rộng, hướng và vị trí tâm; có thể ghi “ở giữa tấm” hoặc tọa độ tâm X/Y. Khi không ghi hướng, rãnh ở giữa sẽ theo cạnh dài của tấm và CAD Plan công bố giả định này. Rãnh phải nằm hoàn toàn trong tấm và không giao với lỗ hoặc rãnh khác. Chỉ hỗ trợ rãnh xuyên; hốc mù, lỗ ren, lỗ bậc, bo góc, trục và feature khác đều bị từ chối thay vì bị bỏ qua.
+Parser xác định hiện hỗ trợ **tấm chữ nhật, đúng 4 lỗ xuyên, tối đa 20 rãnh xuyên bo tròn cùng kích thước và nhóm hốc chữ nhật mù**. Rãnh cần nêu chiều dài tổng thể, chiều rộng, hướng và vị trí tâm; có thể ghi “ở giữa tấm” hoặc tọa độ tâm X/Y. Khi không ghi hướng, rãnh ở giữa sẽ theo cạnh dài của tấm và CAD Plan công bố giả định này. Hốc chữ nhật cần có chiều dài theo X, chiều rộng theo Y, độ sâu và tọa độ tâm (hoặc ghi ở giữa tấm); độ sâu phải nhỏ hơn chiều dày, và hốc không được chạm/giao với lỗ hoặc rãnh xuyên. Parser hiện tạo một hốc từ mô tả; có thể nhân bản vị trí trong CAD Plan để tạo thêm hốc cùng kích thước. Hốc tròn, hốc có góc bo, lỗ ren, lỗ bậc, bo góc, trục và feature khác đều bị từ chối thay vì bị bỏ qua.
 
 Các kích thước mm, cm, m và inch được đổi sang mm. Ví dụ:
 
@@ -31,7 +31,9 @@ Các kích thước mm, cm, m và inch được đổi sang mm. Ví dụ:
 
 `Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm, rãnh xuyên dài 30 mm rộng 8 mm ở giữa tấm theo chiều dài`
 
-Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Rãnh có đầu tròn; “dài” là kích thước tổng thể bao gồm hai đầu bán nguyệt. Mô hình được dựng bằng FreeCAD headless trong container Linux. `.FCStd` hiện chứa một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ; sản phẩm không tạo file `.SLDPRT`.
+`Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm có hốc chữ nhật dài 20 mm rộng 12 mm sâu 2 mm, tâm hốc tại x=50 mm, y=50 mm`
+
+Bộ phân tích hiện là parser theo quy tắc, chưa phải mô hình AI tổng quát. Rãnh có đầu tròn; “dài” là kích thước tổng thể bao gồm hai đầu bán nguyệt. Hốc chỉ có cạnh thẳng, song song trục X/Y. Mô hình được dựng bằng FreeCAD headless trong container Linux. `.FCStd` hiện chứa một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ; sản phẩm không tạo file `.SLDPRT`.
 
 ## Chạy local bằng Docker
 
@@ -53,8 +55,8 @@ Gọi `POST /api/plan` với mô tả:
 
 ```json
 {
-  "description": "Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm, rãnh xuyên dài 30 mm rộng 8 mm ở giữa tấm theo chiều dài",
-  "part_name": "slotted_plate"
+    "description": "Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm, rãnh xuyên dài 30 mm rộng 8 mm ở giữa tấm theo chiều dài và hốc chữ nhật dài 20 mm rộng 12 mm sâu 2 mm, tâm hốc tại x=50 mm, y=50 mm",
+    "part_name": "pocketed_plate"
 }
 ```
 
@@ -63,8 +65,8 @@ Response có thuộc tính `plan`; sau khi rà soát preview, gửi thuộc tín
 ```json
 {
   "plan": {
-    "schema_version": "1.1",
-    "part_name": "slotted_plate",
+    "schema_version": "1.2",
+    "part_name": "pocketed_plate",
     "units": "mm",
     "features": [
       {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
@@ -72,7 +74,9 @@ Response có thuộc tính `plan`; sau khi rà soát preview, gửi thuộc tín
         {"x": 10, "y": 10}, {"x": 90, "y": 10}, {"x": 10, "y": 50}, {"x": 90, "y": 50}
       ]},
       {"id": "slot", "type": "through_slots", "slot_length": 30, "slot_width": 8,
-       "orientation": "x", "positions": [{"x": 50, "y": 30}]}
+       "orientation": "x", "positions": [{"x": 50, "y": 30}]},
+      {"id": "pockets", "type": "rectangular_pockets", "pocket_length": 20,
+       "pocket_width": 12, "pocket_depth": 2, "positions": [{"x": 50, "y": 50}]}
     ],
     "outputs": ["fcstd", "step", "stl", "pdf"],
     "assumptions": ["Khoảng cách mép được hiểu là từ tâm lỗ đến cạnh tấm."],
@@ -91,4 +95,4 @@ Giao diện gửi CAD plan đã hiển thị sau khi người dùng xác nhận.
 - Docker runtime dùng Python Debian cùng bộ FreeCAD Debian; image build chạy import smoke test dưới tài khoản ứng dụng trước khi đóng gói.
 - Dữ liệu ghi trong filesystem của Space có thể mất khi Space khởi động lại; file tạo ra cần được tải xuống.
 - FreeCAD 0.20.2 đã được xác nhận trên GitHub Docker smoke test và Hugging Face Space sau deploy; bài generation trên Space đã trả HTTP 200 và các file trong ZIP đã qua kiểm tra định dạng.
-- Bộ parser và CI có kiểm thử cho tấm 4 lỗ kết hợp rãnh xuyên bo tròn; các feature khác, job queue, xác thực người dùng và SOLIDWORKS Agent chưa được xác minh/triển khai.
+- Bộ parser có kiểm thử cho tấm 4 lỗ, rãnh xuyên bo tròn và hốc chữ nhật mù. CI FreeCAD smoke test dựng tổ hợp các feature này và xác minh thể tích, mặt đáy hốc cùng artifact trước khi publish. Job queue, xác thực người dùng và SOLIDWORKS Agent chưa được triển khai.

@@ -10,7 +10,7 @@ def test_four_hole_plate_plan():
         "mounting_plate",
     )
     assert plan.part_name == "mounting_plate"
-    assert plan.schema_version == "1.1"
+    assert plan.schema_version == "1.2"
     assert plan.features[0].length == 100
     assert len(plan.features[1].positions) == 4
     assert plan.outputs == ["fcstd", "step", "stl", "pdf"]
@@ -101,6 +101,100 @@ def test_slot_dimensions_and_unsupported_blind_slot_are_rejected():
         plan_from_description(
             "Plate length 100 mm width 60 mm thickness 5 mm with a blind slot length 30 mm width 8 mm"
         )
+
+
+def test_vietnamese_blind_rectangular_pocket_is_planned_with_holes():
+    plan = plan_from_description(
+        "Vẽ tấm dài 120 mm rộng 80 mm dày 10 mm, 4 lỗ Ø6 cách mép 10 mm, "
+        "hốc chữ nhật dài 40 mm rộng 20 mm sâu 3 mm ở giữa tấm",
+        "pocket_plate",
+    )
+
+    assert plan.schema_version == "1.2"
+    assert [feature.type for feature in plan.features] == ["extruded_plate", "through_holes", "rectangular_pockets"]
+    pocket = plan.features[-1]
+    assert (pocket.pocket_length, pocket.pocket_width, pocket.pocket_depth) == (40, 20, 3)
+    assert pocket.positions[0].model_dump() == {"x": 60, "y": 40}
+    assert plan.parameters["pocket_count"] == 1
+    assert "pockets_blind" in plan.constraints
+
+
+def test_english_pocket_uses_explicit_units_and_center_coordinates():
+    plan = plan_from_description(
+        "Make a plate length 120 mm width 80 mm thickness 10 mm with a blind rectangular pocket "
+        "length 40 mm width 20 mm depth 3 mm, pocket center at x=60 mm, y=40 mm"
+    )
+
+    pocket = plan.features[-1]
+    assert pocket.type == "rectangular_pockets"
+    assert (pocket.pocket_length, pocket.pocket_width, pocket.pocket_depth) == (40, 20, 3)
+    assert pocket.positions[0].model_dump() == {"x": 60, "y": 40}
+
+
+def test_blind_pocket_requires_explicit_shape_dimensions_and_location():
+    with pytest.raises(ValueError, match="chiều sâu hốc"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with rectangular pocket length 40 mm width 20 mm"
+        )
+    with pytest.raises(ValueError, match="cần có tâm X/Y"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with rectangular blind pocket "
+            "length 40 mm width 20 mm depth 3 mm"
+        )
+    with pytest.raises(ValueError, match="cần có tâm X/Y"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with rectangular blind pocket "
+            "length 40 mm width 20 mm depth 3 mm, and a through slot length 20 mm width 6 mm centered in the plate"
+        )
+    with pytest.raises(ValueError, match="chỉ hỗ trợ hốc chữ nhật mù"):
+        plan_from_description(
+            "Plate length 120 mm width 80 mm thickness 10 mm with circular pocket depth 3 mm"
+        )
+
+
+def test_blind_pocket_validation_rejects_through_depth_collision_and_overlap():
+    base = {"id": "base", "type": "extruded_plate", "length": 120, "width": 80, "thickness": 10}
+    pocket = {
+        "id": "pockets", "type": "rectangular_pockets", "pocket_length": 40,
+        "pocket_width": 20, "pocket_depth": 3, "positions": [{"x": 60, "y": 40}],
+    }
+    with pytest.raises(ValidationError, match="depth must be less than the plate thickness"):
+        CADPlan.model_validate({"part_name": "through_pocket", "features": [base, {**pocket, "pocket_depth": 10}]})
+
+    with pytest.raises(ValidationError, match="must not overlap or touch through holes"):
+        CADPlan.model_validate({
+            "part_name": "pocket_hole_collision",
+            "features": [base,
+                {"id": "holes", "type": "through_holes", "diameter": 6, "positions": [{"x": 40, "y": 40}]},
+                pocket],
+        })
+
+    with pytest.raises(ValidationError, match="Rectangular pockets must not overlap or touch"):
+        CADPlan.model_validate({
+            "part_name": "overlapping_pockets",
+            "features": [base, {**pocket, "positions": [{"x": 50, "y": 40}, {"x": 75, "y": 40}]}],
+        })
+
+
+def test_pocket_requires_schema_v12_and_is_clear_of_through_slots():
+    base = {"id": "base", "type": "extruded_plate", "length": 120, "width": 80, "thickness": 10}
+    pocket = {
+        "id": "pockets", "type": "rectangular_pockets", "pocket_length": 30,
+        "pocket_width": 12, "pocket_depth": 3, "positions": [{"x": 60, "y": 40}],
+    }
+    with pytest.raises(ValidationError, match="requires CAD Plan schema version 1.2"):
+        CADPlan.model_validate({
+            "schema_version": "1.1", "part_name": "legacy_pocket", "features": [base, pocket],
+        })
+
+    with pytest.raises(ValidationError, match="must not overlap or touch through slots"):
+        CADPlan.model_validate({
+            "part_name": "pocket_slot_collision",
+            "features": [base,
+                {"id": "slot", "type": "through_slots", "slot_length": 40, "slot_width": 8,
+                 "orientation": "x", "positions": [{"x": 60, "y": 40}]},
+                pocket],
+        })
 
 
 def test_schema_v10_remains_compatible_for_existing_plate_plans():

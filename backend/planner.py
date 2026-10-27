@@ -85,6 +85,14 @@ def _hole_count(text: str):
     raise ValueError("Hãy ghi rõ số lỗ. Bộ parser hiện chỉ hỗ trợ đúng 4 lỗ xuyên.")
 
 
+def _feature_clause(text: str, start: int, following_markers: tuple[str, ...]) -> str:
+    end = min(
+        (index for marker in following_markers if (index := text.find(marker, start + 1)) >= 0),
+        default=len(text),
+    )
+    return text[start:end]
+
+
 def _slot_position(text: str, length: float, width: float):
     coordinates = re.search(
         r"(?:tâm(?:\s+của)?\s+rãnh|slot\s+center|center\s+of\s+slot)\s*(?:at|tại)?\s*"
@@ -132,7 +140,7 @@ def _through_slot(text: str, length: float, width: float):
         slot_index = text.find("slot")
     if slot_index < 0:
         return None, []
-    slot_text = text[slot_index:]
+    slot_text = _feature_clause(text, slot_index, ("hốc", "pocket"))
     if not ("rãnh xuyên" in slot_text or re.search(r"\bthrough\s+slot\b", text)):
         raise ValueError("Hiện chỉ hỗ trợ rãnh xuyên; hãy ghi rõ 'rãnh xuyên' hoặc 'through slot'.")
     slot_length, length_unit = _dimension(slot_text, "dài|length|long", "chiều dài rãnh")
@@ -156,8 +164,68 @@ def _through_slot(text: str, length: float, width: float):
     }, assumptions
 
 
+def _pocket_position(text: str, length: float, width: float):
+    coordinates = re.search(
+        r"(?:tâm(?:\s+của)?\s*(?:hốc|pocket)|pocket\s+(?:center|centre)|"
+        r"cent(?:er|re)\s+of\s+(?:the\s+)?pocket)\s*(?:at|tại)?\s*"
+        r"x\s*[:=].*?[,;]\s*y\s*[:=]",
+        text,
+        re.IGNORECASE,
+    )
+    if coordinates:
+        x_match = re.search(rf"\bx\s*[:=]\s*{QUANTITY}", coordinates.group(0), re.IGNORECASE)
+        y_match = re.search(rf"\by\s*[:=]\s*{QUANTITY}", text[coordinates.start():], re.IGNORECASE)
+        if x_match and y_match:
+            x = float(x_match.group("value").replace(",", ".")) * UNIT_TO_MM[(x_match.group("unit") or "mm").lower()]
+            y = float(y_match.group("value").replace(",", ".")) * UNIT_TO_MM[(y_match.group("unit") or "mm").lower()]
+            return {"x": x, "y": y}, False
+
+    centered = any(token in text for token in (
+        "ở giữa tấm", "chính giữa tấm", "giữa tấm", "centered in the plate",
+        "at the center of the plate", "at the centre of the plate",
+        "center of the plate", "centre of the plate",
+    ))
+    if not centered:
+        raise ValueError("Hốc chữ nhật cần có tâm X/Y hoặc ghi rõ đặt chính giữa tấm.")
+    return {"x": length / 2, "y": width / 2}, True
+
+
+def _rectangular_pocket(text: str, length: float, width: float):
+    markers = (
+        "hốc mù hình chữ nhật", "hốc mù chữ nhật", "hốc hình chữ nhật", "hốc chữ nhật",
+        "blind rectangular pocket", "rectangular blind pocket", "rectangular pocket",
+    )
+    marker = next((item for item in markers if item in text), None)
+    if marker is None:
+        if "pocket" in text or "hốc" in text:
+            raise ValueError(
+                "Hiện chỉ hỗ trợ hốc chữ nhật mù; hãy ghi rõ hình chữ nhật, chiều dài, chiều rộng, độ sâu và vị trí tâm."
+            )
+        return None, []
+
+    pocket_index = text.find(marker)
+    pocket_text = _feature_clause(text, pocket_index, ("rãnh", "slot", "lỗ", "hole"))
+    pocket_length, length_unit = _dimension(pocket_text, "dài|length|long", "chiều dài hốc")
+    pocket_width, width_unit = _dimension(pocket_text, "rộng|width|wide", "chiều rộng hốc")
+    pocket_depth, depth_unit = _dimension(pocket_text, "sâu|depth|deep", "chiều sâu hốc")
+    position, is_centered = _pocket_position(pocket_text, length, width)
+    assumptions = []
+    if not all((length_unit, width_unit, depth_unit)):
+        assumptions.append("Kích thước hốc không ghi đơn vị được hiểu là mm.")
+    if is_centered:
+        assumptions.append("Hốc chữ nhật được đặt tại tâm hình chữ nhật của tấm theo mô tả.")
+    return {
+        "id": "pockets",
+        "type": "rectangular_pockets",
+        "pocket_length": pocket_length,
+        "pocket_width": pocket_width,
+        "pocket_depth": pocket_depth,
+        "positions": [position],
+    }, assumptions
+
+
 def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
-    """Deterministic, allowlisted parser for plates, four holes and rounded through slots."""
+    """Parse the allowlisted plate, through-cut and blind rectangular-pocket subset."""
     text = unicodedata.normalize("NFKC", description).lower()
     unsupported = {
         "lỗ ren": "lỗ ren/threaded hole",
@@ -168,8 +236,6 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
         "rãnh mù": "rãnh mù/blind slot",
         "counterbore": "lỗ bậc/counterbore",
         "countersink": "lỗ vát/countersink",
-        "pocket": "hốc/pocket",
-        "hốc": "hốc/pocket",
         "boss": "gờ/boss",
         "trục": "trục/shaft",
         "shaft": "trục/shaft",
@@ -216,8 +282,13 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
         features.append(slot_feature)
         assumptions.extend(slot_assumptions)
 
+    pocket_feature, pocket_assumptions = _rectangular_pocket(text, length, width)
+    if pocket_feature:
+        features.append(pocket_feature)
+        assumptions.extend(pocket_assumptions)
+
     return CADPlan.model_validate({
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "part_name": part_name,
         "units": "mm",
         "features": features,

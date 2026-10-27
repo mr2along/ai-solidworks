@@ -42,7 +42,7 @@ def _unique_xy(points, tolerance):
     return unique
 
 
-def validate_shape(shape, length, width, thickness, holes_feature, slots_feature=None):
+def validate_shape(shape, length, width, thickness, holes_feature, slots_feature=None, pockets_feature=None):
     if shape.isNull() or not shape.isValid() or shape.Volume <= 0:
         raise RuntimeError("FreeCAD produced an invalid or empty solid.")
     if len(shape.Solids) != 1:
@@ -75,6 +75,11 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
                 expected_slot_centers.extend(((x - centerline_half, y), (x + centerline_half, y)))
             else:
                 expected_slot_centers.extend(((x, y - centerline_half), (x, y + centerline_half)))
+    if pockets_feature:
+        pocket_length = float(pockets_feature["pocket_length"])
+        pocket_width = float(pockets_feature["pocket_width"])
+        pocket_depth = float(pockets_feature["pocket_depth"])
+        expected_volume -= len(pockets_feature["positions"]) * pocket_length * pocket_width * pocket_depth
     volume_tolerance = max(1e-5, abs(expected_volume) * 1e-8)
     if not math.isclose(shape.Volume, expected_volume, rel_tol=0.0, abs_tol=volume_tolerance):
         raise RuntimeError("Generated solid volume does not match the planned through cuts.")
@@ -110,6 +115,22 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
                 raise RuntimeError("A generated through-cut center does not match the CAD plan.")
             unmatched.pop(match)
 
+    if pockets_feature:
+        expected_area = float(pockets_feature["pocket_length"]) * float(pockets_feature["pocket_width"])
+        floor_z = thickness - float(pockets_feature["pocket_depth"])
+        area_tolerance = max(1e-5, expected_area * 1e-8)
+        for position in pockets_feature["positions"]:
+            expected_x, expected_y = float(position["x"]), float(position["y"])
+            floor_found = any(
+                math.isclose(face.CenterOfMass.x, expected_x, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.CenterOfMass.y, expected_y, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.CenterOfMass.z, floor_z, rel_tol=0.0, abs_tol=tolerance)
+                and math.isclose(face.Area, expected_area, rel_tol=0.0, abs_tol=area_tolerance)
+                for face in shape.Faces
+            )
+            if not floor_found:
+                raise RuntimeError("A blind pocket floor does not match its planned center, depth and dimensions.")
+
 
 def main():
     with open(config_path, "r", encoding="utf-8") as handle:
@@ -123,6 +144,7 @@ def main():
 
     holes_feature = next((item for item in features[1:] if item["type"] == "through_holes"), None)
     slots_feature = next((item for item in features[1:] if item["type"] == "through_slots"), None)
+    pockets_feature = next((item for item in features[1:] if item["type"] == "rectangular_pockets"), None)
     shape = Part.makeBox(length, width, thickness)
     if holes_feature:
         radius = float(holes_feature["diameter"]) / 2.0
@@ -169,7 +191,21 @@ def main():
                 cutter = cutter.fuse(end_cylinder)
             shape = shape.cut(cutter)
 
-    validate_shape(shape, length, width, thickness, holes_feature, slots_feature)
+    if pockets_feature:
+        pocket_length = float(pockets_feature["pocket_length"])
+        pocket_width = float(pockets_feature["pocket_width"])
+        pocket_depth = float(pockets_feature["pocket_depth"])
+        for position in pockets_feature["positions"]:
+            center_x, center_y = float(position["x"]), float(position["y"])
+            cutter = Part.makeBox(
+                pocket_length,
+                pocket_width,
+                pocket_depth + 1.0,
+                App.Vector(center_x - pocket_length / 2, center_y - pocket_width / 2, thickness - pocket_depth),
+            )
+            shape = shape.cut(cutter)
+
+    validate_shape(shape, length, width, thickness, holes_feature, slots_feature, pockets_feature)
 
     name = plan["part_name"]
     doc = App.newDocument(name)
@@ -194,6 +230,15 @@ def main():
         obj.SlotWidth = float(slots_feature["slot_width"])
         obj.addProperty("App::PropertyInteger", "SlotCount", "Dimensions")
         obj.SlotCount = len(slots_feature["positions"])
+    if pockets_feature:
+        obj.addProperty("App::PropertyLength", "PocketLength", "Dimensions")
+        obj.PocketLength = float(pockets_feature["pocket_length"])
+        obj.addProperty("App::PropertyLength", "PocketWidth", "Dimensions")
+        obj.PocketWidth = float(pockets_feature["pocket_width"])
+        obj.addProperty("App::PropertyLength", "PocketDepth", "Dimensions")
+        obj.PocketDepth = float(pockets_feature["pocket_depth"])
+        obj.addProperty("App::PropertyInteger", "PocketCount", "Dimensions")
+        obj.PocketCount = len(pockets_feature["positions"])
 
     doc.recompute()
     fcstd_path = os.path.join(output_dir, name + ".FCStd")
