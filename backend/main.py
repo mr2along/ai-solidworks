@@ -1,22 +1,24 @@
+import io
 import json
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
-import zipfile
 import threading
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from .assembly_pdf import export_assembly_pdf
 from .export_pdf import export_dimension_pdf
-from .schemas import GenerateRequest, PlanRequest, JobResponse
 from .planner import plan_from_description
+from .schemas import AssemblyDrawingRequest, GenerateRequest, JobResponse, PlanRequest
 
 app = FastAPI(title="AI CAD Agent", version="0.3.0")
 ROOT = Path(__file__).resolve().parents[1]
@@ -222,6 +224,33 @@ def generate_cad(request: GenerateRequest):
         ) from None
     finally:
         _GENERATION_LOCK.release()
+
+
+@app.post("/api/assembly/drawing")
+def create_assembly_drawing(request: AssemblyDrawingRequest):
+    """Create an illustrative assembly PDF from validated part plans and explicit poses."""
+    output = io.BytesIO()
+    correlation_id = uuid.uuid4().hex[:12]
+    try:
+        export_assembly_pdf(request.plan.model_dump(mode="json"), output)
+        pdf_bytes = output.getvalue()
+        if not pdf_bytes.startswith(b"%PDF-") or b"%%EOF" not in pdf_bytes[-1024:]:
+            raise RuntimeError("Assembly PDF failed the output integrity check")
+    except Exception:
+        logger.exception("Assembly drawing export failed (correlation_id=%s).", correlation_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể tạo bản vẽ lắp. Mã tham chiếu: {correlation_id}.",
+            headers={"X-Correlation-ID": correlation_id},
+        ) from None
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="assembly-drawing.pdf"',
+            "X-Correlation-ID": correlation_id,
+        },
+    )
 
 
 frontend_dist = ROOT / "frontend" / "dist"

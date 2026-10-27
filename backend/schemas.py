@@ -1,5 +1,5 @@
 import math
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
@@ -7,6 +7,9 @@ class Hole(BaseModel):
     model_config = ConfigDict(extra="forbid")
     x: float = Field(ge=0, le=2000, allow_inf_nan=False)
     y: float = Field(ge=0, le=2000, allow_inf_nan=False)
+
+
+PlanText = Annotated[str, Field(max_length=300)]
 
 
 class Feature(BaseModel):
@@ -36,9 +39,9 @@ class CADPlan(BaseModel):
         default_factory=lambda: ["fcstd", "step", "stl", "pdf"]
     )
     parameters: dict[str, float] = Field(default_factory=dict, max_length=20)
-    constraints: list[str] = Field(default_factory=list, max_length=20)
-    assumptions: list[str] = Field(default_factory=list, max_length=20)
-    warnings: list[str] = Field(default_factory=list, max_length=20)
+    constraints: list[PlanText] = Field(default_factory=list, max_length=20)
+    assumptions: list[PlanText] = Field(default_factory=list, max_length=20)
+    warnings: list[PlanText] = Field(default_factory=list, max_length=20)
     validation: Literal["passed"] = "passed"
     backend: Literal["freecad"] = "freecad"
 
@@ -241,6 +244,56 @@ class PlanRequest(BaseModel):
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plan: CADPlan
+
+
+class AssemblyPlacement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(ge=-5000, le=5000, allow_inf_nan=False)
+    y: float = Field(ge=-5000, le=5000, allow_inf_nan=False)
+    z: float = Field(ge=-5000, le=5000, allow_inf_nan=False)
+    rotation_z: Literal[0, 90, 180, 270] = 0
+
+
+class AssemblyItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
+    item_number: int = Field(ge=1, le=99)
+    part_plan: CADPlan
+    placements: list[AssemblyPlacement] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_unique_placements(self):
+        poses = [(item.x, item.y, item.z, item.rotation_z) for item in self.placements]
+        if len(set(poses)) != len(poses):
+            raise ValueError("Assembly placements for one BOM item must be unique")
+        return self
+
+
+class AssemblyDrawingPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
+    schema_version: Literal["1.0"] = "1.0"
+    assembly_name: str = Field(min_length=1, max_length=60, pattern=r"^[A-Za-z0-9_-]+$")
+    units: Literal["mm"] = "mm"
+    items: list[AssemblyItem] = Field(min_length=1, max_length=12)
+    warnings: list[PlanText] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_assembly_contents(self):
+        if len({item.id for item in self.items}) != len(self.items):
+            raise ValueError("Assembly item IDs must be unique")
+        if len({item.item_number for item in self.items}) != len(self.items):
+            raise ValueError("BOM item numbers must be unique")
+        instance_count = sum(len(item.placements) for item in self.items)
+        if instance_count < 2:
+            raise ValueError("An assembly drawing requires at least two placed components")
+        if instance_count > 30:
+            raise ValueError("An assembly drawing is limited to 30 component instances")
+        return self
+
+
+class AssemblyDrawingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan: AssemblyDrawingPlan
 
 
 class JobResponse(BaseModel):

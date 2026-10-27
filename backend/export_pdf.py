@@ -31,13 +31,21 @@ def _polygon(pdf: canvas.Canvas, points: Iterable[tuple[float, float]], fill: Co
     pdf.drawPath(path, stroke=1, fill=1)
 
 
-def _draw_page_header(pdf: canvas.Canvas, page_w: float, page_h: float, title: str, part_name: str) -> None:
+def _draw_page_header(
+    pdf: canvas.Canvas,
+    page_w: float,
+    page_h: float,
+    title: str,
+    part_name: str,
+    *,
+    entity_label: str = "Part",
+) -> None:
     pdf.setFillColor(INK)
     pdf.setFont("Helvetica-Bold", 16)
     pdf.drawString(38, page_h - 40, title)
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
-    pdf.drawString(38, page_h - 57, f"Part: {part_name}    Units: mm    Generated from validated CAD plan")
+    pdf.drawString(38, page_h - 57, f"{entity_label}: {part_name}    Units: mm    Generated from validated CAD plan")
     pdf.setStrokeColor(RULE)
     pdf.setLineWidth(0.8)
     pdf.line(38, page_h - 70, page_w - 38, page_h - 70)
@@ -125,13 +133,15 @@ def _draw_top_view(
     pockets: dict | None = None,
     *,
     mirror_x: bool = False,
+    fill_part: bool = True,
+    stroke_color: Color = INK,
 ) -> None:
     draw_w, draw_h = length * scale, width * scale
     pdf.saveState()
-    pdf.setStrokeColor(INK)
+    pdf.setStrokeColor(stroke_color)
     pdf.setFillColor(HexColor("#FFFFFF"))
     pdf.setLineWidth(1.2)
-    pdf.rect(x0, y0, draw_w, draw_h, stroke=1, fill=1)
+    pdf.rect(x0, y0, draw_w, draw_h, stroke=1, fill=int(fill_part))
     if holes:
         diameter = float(holes["diameter"])
         radius = diameter * scale / 2
@@ -153,7 +163,7 @@ def _draw_top_view(
                 pdf,
                 slots,
                 lambda x, y: (x0 + (center_x + x) * scale, y0 + (center_y + y) * scale),
-                fill=True,
+                fill=fill_part,
             )
     if pockets:
         pocket_length = float(pockets["pocket_length"])
@@ -276,37 +286,49 @@ def _draw_isometric(
     slots: dict | None,
     pockets: dict | None,
     area: tuple[float, float, float, float],
+    *,
+    projection: tuple[float, float, float] | None = None,
+    placement: tuple[float, float, float, int] = (0.0, 0.0, 0.0, 0),
+    face_colors: tuple[Color, Color, Color] = (FRONT_FACE, RIGHT_FACE, TOP_FACE),
 ) -> None:
     area_x, area_y, area_w, area_h = area
-    cosine = math.cos(math.radians(30))
-    projected_w = cosine * (length + width)
-    projected_h = 0.5 * (length + width) + thickness
-    scale = min(area_w / projected_w, area_h / projected_h)
-    projected_center_x = area_x + area_w / 2
-    projected_center_y = area_y + area_h / 2
-    min_x, max_x = -cosine * width, cosine * length
-    min_y, max_y = 0.0, 0.5 * (length + width) + thickness
-    origin_x = projected_center_x - (min_x + max_x) * scale / 2
-    origin_y = projected_center_y - (min_y + max_y) * scale / 2
+    if projection is None:
+        cosine = math.cos(math.radians(30))
+        projected_w = cosine * (length + width)
+        projected_h = 0.5 * (length + width) + thickness
+        scale = min(area_w / projected_w, area_h / projected_h)
+        projected_center_x = area_x + area_w / 2
+        projected_center_y = area_y + area_h / 2
+        min_x, max_x = -cosine * width, cosine * length
+        min_y, max_y = 0.0, 0.5 * (length + width) + thickness
+        origin_x = projected_center_x - (min_x + max_x) * scale / 2
+        origin_y = projected_center_y - (min_y + max_y) * scale / 2
+    else:
+        scale, origin_x, origin_y = projection
 
     def p(x: float, y: float, z: float) -> tuple[float, float]:
+        if projection is not None:
+            x, y = _rotate_xy(x, y, length, width, placement[3])
+            x += placement[0]
+            y += placement[1]
+            z += placement[2]
         return _iso_point(x, y, z, scale, origin_x, origin_y)
 
     # Show the two visible side faces and then the top face.
     _polygon(
         pdf,
         [p(0, 0, 0), p(length, 0, 0), p(length, 0, thickness), p(0, 0, thickness)],
-        FRONT_FACE,
+        face_colors[0],
     )
     _polygon(
         pdf,
         [p(length, 0, 0), p(length, width, 0), p(length, width, thickness), p(length, 0, thickness)],
-        RIGHT_FACE,
+        face_colors[1],
     )
     _polygon(
         pdf,
         [p(0, 0, thickness), p(length, 0, thickness), p(length, width, thickness), p(0, width, thickness)],
-        TOP_FACE,
+        face_colors[2],
     )
 
     if holes:
@@ -362,9 +384,9 @@ def _draw_isometric(
             corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
             _polygon(pdf, [p(x, y, floor_z) for x, y in corners], HexColor("#D8E1E8"))
             _polygon(pdf, [p(x0, y0, thickness), p(x1, y0, thickness),
-                           p(x1, y0, floor_z), p(x0, y0, floor_z)], FRONT_FACE)
+                           p(x1, y0, floor_z), p(x0, y0, floor_z)], face_colors[0])
             _polygon(pdf, [p(x1, y0, thickness), p(x1, y1, thickness),
-                           p(x1, y1, floor_z), p(x1, y0, floor_z)], RIGHT_FACE)
+                           p(x1, y1, floor_z), p(x1, y0, floor_z)], face_colors[1])
             pdf.saveState()
             pdf.setStrokeColor(INK)
             pdf.setLineWidth(0.8)
@@ -396,6 +418,17 @@ def _unique(values: Iterable[float]) -> list[float]:
     return sorted(set(round(value, 6) for value in values))
 
 
+def _rotate_xy(x: float, y: float, length: float, width: float, rotation_z: int) -> tuple[float, float]:
+    """Rotate a plate about Z and keep its local lower-left corner at the origin."""
+    if rotation_z == 90:
+        return width - y, x
+    if rotation_z == 180:
+        return length - x, width - y
+    if rotation_z == 270:
+        return y, length - x
+    return x, y
+
+
 def _draw_elevation(
     pdf: canvas.Canvas,
     center_x: float,
@@ -408,11 +441,12 @@ def _draw_elevation(
     mirror: bool = False,
     hidden_ranges: Iterable[tuple[float, float]] = (),
     hidden_rectangles: Iterable[tuple[float, float, float, float]] = (),
+    stroke_color: Color = INK,
 ) -> None:
     width_pt, height_pt = horizontal_length * scale, thickness * scale
     x0, y0 = center_x - width_pt / 2, center_y - height_pt / 2
     pdf.saveState()
-    pdf.setStrokeColor(INK)
+    pdf.setStrokeColor(stroke_color)
     pdf.setLineWidth(1.1)
     pdf.rect(x0, y0, width_pt, height_pt, stroke=1, fill=0)
     pdf.setStrokeColor(HIDDEN)

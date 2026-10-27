@@ -17,7 +17,8 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 - `.FCStd`: tài liệu FreeCAD có thể mở và chỉnh sửa; executor hiện lưu một `Part::Feature` cùng thuộc tính kích thước, chưa phải Feature Tree tham số đầy đủ.
 - `.step`: trao đổi mô hình 3D.
 - `.stl`: mô hình lưới cho in 3D.
-- `.pdf`: bản vẽ sơ bộ gồm hình trục đo 3D, hình chiếu vuông góc sáu mặt và hình chiếu trên có kích thước (không phải bản vẽ chứng nhận sản xuất).
+- `.pdf` chi tiết: bản vẽ sơ bộ gồm hình trục đo 3D, hình chiếu vuông góc sáu mặt và hình chiếu trên có kích thước.
+- `assembly-drawing.pdf`: bản vẽ lắp sơ bộ gồm hình trục đo lắp ráp, số gọi chi tiết, bảng kê vật tư và ba hình chiếu chính.
 
 ## Phạm vi hiện tại
 
@@ -50,6 +51,51 @@ Mở `http://localhost:7860`.
 - `GET /api/health/cad`: chạy import probe trong FreeCAD runtime (`FreeCAD`, `Part`, `Mesh`, `Sketcher`) và trả trạng thái 503 nếu module không tải được.
 - `POST /api/plan`: kiểm tra mô tả và trả về CAD plan JSON gồm feature, tham số, ràng buộc, giả định, cảnh báo và kết quả validation.
 - `POST /api/generate`: nhận `{"plan": <plan>}` từ bước preview; server xác thực lại plan trước khi gọi FreeCAD. Gọi `/api/plan` trước, sau đó gửi trường `plan` trong response; request cũ chỉ có mô tả cần chuyển sang flow hai bước này.
+- `POST /api/assembly/drawing`: nhận một Assembly Drawing Plan gồm các CAD Plan chi tiết đã được kiểm tra cùng vị trí lắp X/Y/Z và góc quay quanh Z (0/90/180/270 độ); trả về PDF lắp ráp trực tiếp.
+
+Ví dụ rút gọn cho `POST /api/assembly/drawing` (mỗi `part_plan` nên lấy nguyên từ response `/api/plan`):
+
+```json
+{
+  "plan": {
+    "schema_version": "1.0",
+    "assembly_name": "mounting_assembly",
+    "units": "mm",
+    "items": [
+      {
+        "id": "base",
+        "item_number": 1,
+        "part_plan": {
+          "schema_version": "1.2",
+          "part_name": "base_plate",
+          "units": "mm",
+          "features": [
+            {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5}
+          ]
+        },
+        "placements": [{"x": 0, "y": 0, "z": 0, "rotation_z": 0}]
+      },
+      {
+        "id": "support",
+        "item_number": 2,
+        "part_plan": {
+          "schema_version": "1.2",
+          "part_name": "support_plate",
+          "units": "mm",
+          "features": [
+            {"id": "base", "type": "extruded_plate", "length": 20, "width": 20, "thickness": 5}
+          ]
+        },
+        "placements": [{"x": 40, "y": 20, "z": 5, "rotation_z": 90}]
+      }
+    ]
+  }
+}
+```
+
+### Giới hạn bản vẽ lắp
+
+Bản vẽ lắp hiện dùng lại các CAD Plan dạng tấm mà backend đang hỗ trợ. Người dùng phải nhập rõ từng vị trí; X/Y xác định góc dưới-trái của footprint sau khi quay, Z xác định mặt đáy; phần mềm chỉ hỗ trợ tịnh tiến X/Y/Z và quay quanh Z theo góc 90 độ. Vị trí mặc định trên giao diện xếp các chi tiết tách nhau để dễ nhận biết; cần chỉnh về vị trí lắp thực tế trước khi xuất. Bản vẽ có bảng kê, số gọi chi tiết, hình trục đo và hình chiếu trên/trước/phải. Hệ thống chưa dựng assembly native, chưa xuất assembly FCStd/STEP, và chưa kiểm tra mate, va chạm, khe hở hoặc dung sai. PDF chỉ để rà soát trực quan, không phải bản vẽ sản xuất được chứng nhận.
 
 Gọi `POST /api/plan` với mô tả:
 
