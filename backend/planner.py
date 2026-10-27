@@ -85,17 +85,95 @@ def _hole_count(text: str):
     raise ValueError("Hãy ghi rõ số lỗ. Bộ parser hiện chỉ hỗ trợ đúng 4 lỗ xuyên.")
 
 
+def _slot_position(text: str, length: float, width: float):
+    coordinates = re.search(
+        r"(?:tâm(?:\s+của)?\s+rãnh|slot\s+center|center\s+of\s+slot)\s*(?:at|tại)?\s*"
+        r"x\s*[:=].*?[,;]\s*y\s*[:=]",
+        text,
+        re.IGNORECASE,
+    )
+    if coordinates:
+        x_match = re.search(rf"\bx\s*[:=]\s*{QUANTITY}", coordinates.group(0), re.IGNORECASE)
+        y_match = re.search(rf"\by\s*[:=]\s*{QUANTITY}", text[coordinates.start():], re.IGNORECASE)
+        if x_match and y_match:
+            x = float(x_match.group("value").replace(",", ".")) * UNIT_TO_MM[(x_match.group("unit") or "mm").lower()]
+            y = float(y_match.group("value").replace(",", ".")) * UNIT_TO_MM[(y_match.group("unit") or "mm").lower()]
+            return {"x": x, "y": y}, False
+
+    centered = any(token in text for token in (
+        "ở giữa tấm", "chính giữa tấm", "giữa tấm", "centered in the plate", "at the center of the plate",
+        "at the centre of the plate", "center of the plate", "centre of the plate",
+    ))
+    if not centered:
+        raise ValueError("Rãnh xuyên cần có tâm X/Y hoặc ghi rõ đặt chính giữa tấm.")
+    return {"x": length / 2, "y": width / 2}, True
+
+
+def _slot_orientation(text: str, length: float, width: float):
+    if re.search(
+        r"(?:theo|along)\s+(?:trục\s+)?y\b|(?:theo|along)\s+chiều\s+rộng|"
+        r"(?:along|the)\s+(?:plate\s+)?width",
+        text,
+    ):
+        return "y", False
+    if re.search(
+        r"(?:theo|along)\s+(?:trục\s+)?x\b|(?:theo|along)\s+chiều\s+dài|"
+        r"(?:along|the)\s+(?:plate\s+)?length",
+        text,
+    ):
+        return "x", False
+    # A centered slot with no axis direction follows the plate's longer in-plane axis.
+    return ("x" if length >= width else "y"), True
+
+
+def _through_slot(text: str, length: float, width: float):
+    slot_index = text.find("rãnh")
+    if slot_index < 0:
+        slot_index = text.find("slot")
+    if slot_index < 0:
+        return None, []
+    slot_text = text[slot_index:]
+    if not ("rãnh xuyên" in slot_text or re.search(r"\bthrough\s+slot\b", text)):
+        raise ValueError("Hiện chỉ hỗ trợ rãnh xuyên; hãy ghi rõ 'rãnh xuyên' hoặc 'through slot'.")
+    slot_length, length_unit = _dimension(slot_text, "dài|length|long", "chiều dài rãnh")
+    slot_width, width_unit = _dimension(slot_text, "rộng|width|wide", "chiều rộng rãnh")
+    position, is_centered = _slot_position(slot_text, length, width)
+    orientation, inferred_axis = _slot_orientation(slot_text, length, width)
+    assumptions = []
+    if not (length_unit and width_unit):
+        assumptions.append("Kích thước rãnh không ghi đơn vị được hiểu là mm.")
+    if is_centered:
+        assumptions.append("Rãnh được đặt tại tâm hình chữ nhật của tấm theo mô tả.")
+    if inferred_axis:
+        assumptions.append("Hướng rãnh không ghi rõ; rãnh được xoay theo cạnh dài của tấm.")
+    return {
+        "id": "slot",
+        "type": "through_slots",
+        "slot_length": slot_length,
+        "slot_width": slot_width,
+        "orientation": orientation,
+        "positions": [position],
+    }, assumptions
+
+
 def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
-    """Deterministic, allowlisted parser for the tested rectangular plate and hole case."""
+    """Deterministic, allowlisted parser for plates, four holes and rounded through slots."""
     text = unicodedata.normalize("NFKC", description).lower()
     unsupported = {
-        "rãnh": "rãnh/slot",
-        "slot": "rãnh/slot",
         "lỗ ren": "lỗ ren/threaded hole",
         "threaded": "lỗ ren/threaded hole",
         "blind hole": "lỗ mù/blind hole",
+        "lỗ mù": "lỗ mù/blind hole",
+        "blind slot": "rãnh mù/blind slot",
+        "rãnh mù": "rãnh mù/blind slot",
         "counterbore": "lỗ bậc/counterbore",
         "countersink": "lỗ vát/countersink",
+        "pocket": "hốc/pocket",
+        "hốc": "hốc/pocket",
+        "boss": "gờ/boss",
+        "trục": "trục/shaft",
+        "shaft": "trục/shaft",
+        "revolve": "tiện xoay/revolve",
         "fillet": "bo tròn/fillet",
         "bo góc": "bo góc/fillet",
         "chamfer": "vát cạnh/chamfer",
@@ -107,32 +185,42 @@ def plan_from_description(description: str, part_name: str = "part") -> CADPlan:
     length, length_unit = _dimension(text, "dài|length|long", "chiều dài")
     width, width_unit = _dimension(text, "rộng|width|wide", "chiều rộng")
     thickness, thickness_unit = _dimension(text, "dày|thickness|thick", "chiều dày")
-    diameter, diameter_unit = _diameter(text)
-    edge, edge_unit = _edge_offset(text)
-    count = _hole_count(text)
-    if count != 4:
-        raise ValueError("Parser hiện chỉ hỗ trợ đúng 4 lỗ xuyên; số lỗ trong yêu cầu không phù hợp.")
-
-    positions = [
-        {"x": edge, "y": edge},
-        {"x": length - edge, "y": edge},
-        {"x": edge, "y": width - edge},
-        {"x": length - edge, "y": width - edge},
+    features = [
+        {"id": "base", "type": "extruded_plate", "length": length, "width": width, "thickness": thickness}
     ]
     assumptions = []
-    if not all((length_unit, width_unit, thickness_unit, diameter_unit, edge_unit)):
+    if not all((length_unit, width_unit, thickness_unit)):
         assumptions.append("Kích thước không ghi đơn vị được hiểu là mm.")
-    if not any(token in text for token in ("tâm lỗ", "hole center", "hole centre", "center-to-edge", "centre-to-edge")):
-        assumptions.append("Khoảng cách mép được hiểu là từ tâm lỗ đến cạnh tấm.")
+
+    has_holes = bool(re.search(r"\b(?:lỗ|holes?)\b", text))
+    if has_holes:
+        diameter, diameter_unit = _diameter(text)
+        edge, edge_unit = _edge_offset(text)
+        count = _hole_count(text)
+        if count != 4:
+            raise ValueError("Parser hiện chỉ hỗ trợ đúng 4 lỗ xuyên; số lỗ trong yêu cầu không phù hợp.")
+        positions = [
+            {"x": edge, "y": edge},
+            {"x": length - edge, "y": edge},
+            {"x": edge, "y": width - edge},
+            {"x": length - edge, "y": width - edge},
+        ]
+        features.append({"id": "holes", "type": "through_holes", "diameter": diameter, "positions": positions})
+        if not all((diameter_unit, edge_unit)):
+            assumptions.append("Kích thước không ghi đơn vị được hiểu là mm.")
+        if not any(token in text for token in ("tâm lỗ", "hole center", "hole centre", "center-to-edge", "centre-to-edge")):
+            assumptions.append("Khoảng cách mép được hiểu là từ tâm lỗ đến cạnh tấm.")
+
+    slot_feature, slot_assumptions = _through_slot(text, length, width)
+    if slot_feature:
+        features.append(slot_feature)
+        assumptions.extend(slot_assumptions)
 
     return CADPlan.model_validate({
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "part_name": part_name,
         "units": "mm",
-        "features": [
-            {"id": "base", "type": "extruded_plate", "length": length, "width": width, "thickness": thickness},
-            {"id": "holes", "type": "through_holes", "diameter": diameter, "positions": positions},
-        ],
+        "features": features,
         "outputs": ["fcstd", "step", "stl", "pdf"],
         "assumptions": assumptions,
         "warnings": ["PDF đầu ra là bản vẽ minh họa, không phải bản vẽ sản xuất được chứng nhận."],

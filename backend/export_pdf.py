@@ -121,6 +121,7 @@ def _draw_top_view(
     width: float,
     scale: float,
     holes: dict | None,
+    slots: dict | None = None,
     *,
     mirror_x: bool = False,
 ) -> None:
@@ -141,7 +142,58 @@ def _draw_top_view(
             pdf.circle(cx, cy, radius, stroke=1, fill=0)
             pdf.line(cx - 3, cy, cx + 3, cy)
             pdf.line(cx, cy - 3, cx, cy + 3)
+    if slots:
+        for slot_position in slots["positions"]:
+            center_x = float(slot_position["x"])
+            center_y = float(slot_position["y"])
+            if mirror_x:
+                center_x = length - center_x
+            _draw_capsule(
+                pdf,
+                slots,
+                lambda x, y: (x0 + (center_x + x) * scale, y0 + (center_y + y) * scale),
+                fill=True,
+            )
     pdf.restoreState()
+
+
+def _draw_capsule(pdf: canvas.Canvas, slot: dict, project, *, fill: bool) -> None:
+    """Draw a rounded-end slot from its centerline length and width."""
+    radius = float(slot["slot_width"]) / 2
+    half_centerline = (float(slot["slot_length"]) - float(slot["slot_width"])) / 2
+
+    def point(along: float, across: float) -> tuple[float, float]:
+        if slot["orientation"] == "y":
+            along, across = across, along
+        return project(along, across)
+
+    k = 0.5522847498
+    path = pdf.beginPath()
+    path.moveTo(*point(-half_centerline, -radius))
+    path.lineTo(*point(half_centerline, -radius))
+    path.curveTo(
+        *point(half_centerline + k * radius, -radius),
+        *point(half_centerline + radius, -k * radius),
+        *point(half_centerline + radius, 0),
+    )
+    path.curveTo(
+        *point(half_centerline + radius, k * radius),
+        *point(half_centerline + k * radius, radius),
+        *point(half_centerline, radius),
+    )
+    path.lineTo(*point(-half_centerline, radius))
+    path.curveTo(
+        *point(-half_centerline - k * radius, radius),
+        *point(-half_centerline - radius, k * radius),
+        *point(-half_centerline - radius, 0),
+    )
+    path.curveTo(
+        *point(-half_centerline - radius, -k * radius),
+        *point(-half_centerline - k * radius, -radius),
+        *point(-half_centerline, -radius),
+    )
+    path.close()
+    pdf.drawPath(path, stroke=1, fill=int(fill))
 
 
 def _iso_point(
@@ -204,6 +256,7 @@ def _draw_isometric(
     width: float,
     thickness: float,
     holes: dict | None,
+    slots: dict | None,
     area: tuple[float, float, float, float],
 ) -> None:
     area_x, area_y, area_w, area_h = area
@@ -263,6 +316,21 @@ def _draw_isometric(
                 )
             pdf.restoreState()
 
+    if slots:
+        for slot_position in slots["positions"]:
+            center_x, center_y = float(slot_position["x"]), float(slot_position["y"])
+            project_top = lambda x, y: p(center_x + x, center_y + y, thickness)
+            project_bottom = lambda x, y: p(center_x + x, center_y + y, 0)
+            pdf.saveState()
+            pdf.setStrokeColor(INK)
+            pdf.setLineWidth(0.8)
+            pdf.setFillColor(HexColor("#FFFFFF"))
+            _draw_capsule(pdf, slots, project_top, fill=True)
+            pdf.setStrokeColor(HIDDEN)
+            pdf.setDash(2, 2)
+            _draw_capsule(pdf, slots, project_bottom, fill=False)
+            pdf.restoreState()
+
     # Reassert the visible top and side edges over the hole graphics.
     pdf.saveState()
     pdf.setStrokeColor(INK)
@@ -296,6 +364,7 @@ def _draw_elevation(
     hidden_positions: Iterable[float],
     *,
     mirror: bool = False,
+    hidden_ranges: Iterable[tuple[float, float]] = (),
 ) -> None:
     width_pt, height_pt = horizontal_length * scale, thickness * scale
     x0, y0 = center_x - width_pt / 2, center_y - height_pt / 2
@@ -309,6 +378,11 @@ def _draw_elevation(
     for value in hidden_positions:
         projected = horizontal_length - value if mirror else value
         pdf.line(x0 + projected * scale, y0, x0 + projected * scale, y0 + height_pt)
+    for start, end in hidden_ranges:
+        if mirror:
+            start, end = horizontal_length - end, horizontal_length - start
+        left, right = x0 + start * scale, x0 + end * scale
+        pdf.rect(left, y0, right - left, height_pt, stroke=1, fill=0)
     pdf.setDash()
     pdf.restoreState()
 
@@ -332,6 +406,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     width = float(base["width"])
     thickness = float(base["thickness"])
     holes = next((item for item in plan["features"][1:] if item["type"] == "through_holes"), None)
+    slots = next((item for item in plan["features"][1:] if item["type"] == "through_slots"), None)
 
     page_w, page_h = landscape(A4)
     pdf = canvas.Canvas(destination, pagesize=(page_w, page_h), pageCompression=0)
@@ -340,7 +415,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
 
     _draw_page_header(pdf, page_w, page_h, "3D MODEL AND DIMENSIONED TOP VIEW", plan["part_name"])
     _view_label(pdf, 235, page_h - 94, "ISOMETRIC VIEW")
-    _draw_isometric(pdf, length, width, thickness, holes, (55, 125, 365, 325))
+    _draw_isometric(pdf, length, width, thickness, holes, slots, (55, 125, 365, 325))
 
     _view_label(
         pdf,
@@ -352,7 +427,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     top_scale = min(292 / length, 170 / width)
     top_x = 478
     top_y = 308
-    _draw_top_view(pdf, top_x, top_y, length, width, top_scale, holes)
+    _draw_top_view(pdf, top_x, top_y, length, width, top_scale, holes, slots)
     _dimension_horizontal(pdf, top_x, top_x + length * top_scale, top_y, top_y - 22, f"L = {length:g} mm")
     _dimension_vertical(
         pdf,
@@ -378,6 +453,15 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
             lines.append(f"  Remaining {len(holes['positions']) - 6} centers are shown in the top view.")
     else:
         lines.append("No holes")
+    if slots:
+        lines.append(
+            f"Through slots: {len(slots['positions'])} x {float(slots['slot_length']):g} x "
+            f"{float(slots['slot_width']):g} mm; axis {slots['orientation'].upper()}"
+        )
+        for index, position in enumerate(slots["positions"][:6], start=1):
+            lines.append(f"  S{index} center: X {float(position['x']):g}, Y {float(position['y']):g} mm")
+    else:
+        lines.append("No through slots")
     for index, line in enumerate(lines, start=1):
         pdf.drawString(specs_x, specs_y - index * 12, line)
     pdf.setFont("Helvetica-Oblique", 7.5)
@@ -391,7 +475,7 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     pdf.drawString(
         38,
         page_h - 86,
-        "One consistent view scale. Dashed edges indicate through-hole boundaries hidden in edge views.",
+        "One consistent view scale. Dashed edges indicate through-cut boundaries hidden in edge views.",
     )
 
     holes_list = holes["positions"] if holes else []
@@ -400,6 +484,20 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     y_positions = _unique(float(hole["y"]) for hole in holes_list)
     x_edges = [value for position in x_positions for value in (position - radius, position + radius)]
     y_edges = [value for position in y_positions for value in (position - radius, position + radius)]
+    x_slot_ranges = []
+    y_slot_ranges = []
+    if slots:
+        half_slot = float(slots["slot_length"]) / 2
+        if slots["orientation"] == "x":
+            x_slot_ranges = [
+                (float(position["x"]) - half_slot, float(position["x"]) + half_slot)
+                for position in slots["positions"]
+            ]
+        else:
+            y_slot_ranges = [
+                (float(position["y"]) - half_slot, float(position["y"]) + half_slot)
+                for position in slots["positions"]
+            ]
 
     scale = min(2.1, (page_w - 76 - 3 * 22) / (2 * (length + width)))
     gap = 22
@@ -418,20 +516,24 @@ def export_dimension_pdf(plan: dict, destination: str) -> None:
     bottom_y_center = front_y - (thickness / 2 + 20 + width / 2) * scale
 
     _view_label(pdf, left_center, 300, "LEFT VIEW", "looking toward +X")
-    _draw_elevation(pdf, left_center, front_y, width, thickness, scale, y_edges, mirror=True)
+    _draw_elevation(pdf, left_center, front_y, width, thickness, scale, y_edges, mirror=True,
+                    hidden_ranges=y_slot_ranges)
     _view_label(pdf, front_center, top_y_center + width * scale / 2 + 17, "TOP VIEW")
     _draw_top_view(pdf, front_center - length * scale / 2, top_y_center - width * scale / 2,
-                   length, width, scale, holes)
+                   length, width, scale, holes, slots)
     _view_label(pdf, right_center, 300, "RIGHT VIEW", "looking toward -X")
-    _draw_elevation(pdf, right_center, front_y, width, thickness, scale, y_edges)
+    _draw_elevation(pdf, right_center, front_y, width, thickness, scale, y_edges,
+                    hidden_ranges=y_slot_ranges)
     _view_label(pdf, rear_center, 300, "REAR VIEW", "looking toward -Y")
-    _draw_elevation(pdf, rear_center, front_y, length, thickness, scale, x_edges, mirror=True)
+    _draw_elevation(pdf, rear_center, front_y, length, thickness, scale, x_edges, mirror=True,
+                    hidden_ranges=x_slot_ranges)
 
     _view_label(pdf, front_center, 300, "FRONT VIEW", "looking toward +Y")
-    _draw_elevation(pdf, front_center, front_y, length, thickness, scale, x_edges)
+    _draw_elevation(pdf, front_center, front_y, length, thickness, scale, x_edges,
+                    hidden_ranges=x_slot_ranges)
     _view_label(pdf, front_center, bottom_y_center - width * scale / 2 - 20, "BOTTOM VIEW", "looking toward +Z")
     _draw_top_view(pdf, front_center - length * scale / 2, bottom_y_center - width * scale / 2,
-                   length, width, scale, holes, mirror_x=True)
+                   length, width, scale, holes, slots, mirror_x=True)
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 7)
     pdf.drawRightString(page_w - 38, 55, f"Projection views at consistent scale; plate thickness = {thickness:g} mm")

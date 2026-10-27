@@ -3,12 +3,15 @@ import { useState } from "react";
 type Position = { x?: number; y?: number };
 type Feature = {
   id: string;
-  type: "extruded_plate" | "through_holes";
+  type: "extruded_plate" | "through_holes" | "through_slots";
   length?: number | null;
   width?: number | null;
   thickness?: number | null;
   diameter?: number | null;
   positions?: Position[];
+  slot_length?: number | null;
+  slot_width?: number | null;
+  orientation?: "x" | "y" | null;
 };
 type Plan = {
   schema_version: string;
@@ -39,6 +42,16 @@ function deriveParameters(features: Feature[]) {
       if (position.y !== undefined) result[`hole_${index + 1}_y_mm`] = position.y;
     });
   }
+  const slots = features.find(feature => feature.type === "through_slots");
+  if (slots?.slot_length !== null && slots?.slot_length !== undefined) result.slot_length_mm = slots.slot_length;
+  if (slots?.slot_width !== null && slots?.slot_width !== undefined) result.slot_width_mm = slots.slot_width;
+  if (slots?.positions) {
+    result.slot_count = slots.positions.length;
+    slots.positions.forEach((position, index) => {
+      if (position.x !== undefined) result[`slot_${index + 1}_x_mm`] = position.x;
+      if (position.y !== undefined) result[`slot_${index + 1}_y_mm`] = position.y;
+    });
+  }
   return result;
 }
 
@@ -62,7 +75,7 @@ export default function App() {
 
   function updateFeatureNumber(
     featureIndex: number,
-    field: "length" | "width" | "thickness" | "diameter",
+    field: "length" | "width" | "thickness" | "diameter" | "slot_length" | "slot_width",
     rawValue: string
   ) {
     const value = rawValue === "" ? undefined : Number(rawValue);
@@ -77,7 +90,7 @@ export default function App() {
     setEdited(true);
   }
 
-  function updateHolePosition(featureIndex: number, holeIndex: number, axis: "x" | "y", rawValue: string) {
+  function updateCutPosition(featureIndex: number, positionIndex: number, axis: "x" | "y", rawValue: string) {
     const value = rawValue === "" ? undefined : Number(rawValue);
     if (value !== undefined && !Number.isFinite(value)) return;
     setPlan(current => {
@@ -87,10 +100,21 @@ export default function App() {
         return {
           ...feature,
           positions: feature.positions?.map((position, index) =>
-            index === holeIndex ? { ...position, [axis]: value } : position
+            index === positionIndex ? { ...position, [axis]: value } : position
           )
         };
       });
+      return { ...current, features, parameters: deriveParameters(features), constraints: [], validation: "pending_server_recheck" };
+    });
+    setEdited(true);
+  }
+
+  function updateSlotOrientation(featureIndex: number, orientation: "x" | "y") {
+    setPlan(current => {
+      if (!current) return current;
+      const features = current.features.map((feature, index) =>
+        index === featureIndex ? { ...feature, orientation } : feature
+      );
       return { ...current, features, parameters: deriveParameters(features), constraints: [], validation: "pending_server_recheck" };
     });
     setEdited(true);
@@ -165,7 +189,7 @@ export default function App() {
 
       <section className="panel">
         <h2>Mô tả chi tiết cơ khí</h2>
-        <p className="muted">Bản hiện tại hỗ trợ tấm chữ nhật có các lỗ xuyên. Hãy ghi rõ kích thước bằng mm và rà soát CAD Plan trước khi tạo.</p>
+        <p className="muted">Hỗ trợ tấm chữ nhật, 4 lỗ xuyên và rãnh xuyên hai đầu bo tròn. Hãy ghi rõ kích thước, vị trí rãnh và rà soát CAD Plan trước khi tạo.</p>
         <label htmlFor="description">Yêu cầu thiết kế</label>
         <textarea id="description" disabled={loading || generating} value={description} onChange={e => { setDescription(e.target.value); clearPreview(); }} rows={4} />
         <label htmlFor="partName">Tên chi tiết / file</label>
@@ -203,7 +227,7 @@ export default function App() {
               </label>
             ))}
           </fieldset>
-        ) : (
+        ) : feature.type === "through_holes" ? (
           <fieldset className="featureEditor" key={feature.id}>
             <legend>Feature {featureIndex + 1}: Lỗ xuyên</legend>
             <label>Đường kính (mm)
@@ -212,8 +236,30 @@ export default function App() {
             <div className="holeGrid"><strong>Lỗ</strong><strong>Tâm X (mm)</strong><strong>Tâm Y (mm)</strong>
               {feature.positions?.map((position, holeIndex) => <div className="holeRow" key={holeIndex}>
                 <span>{holeIndex + 1}</span>
-                <input disabled={loading || generating} aria-label={`Lỗ ${holeIndex + 1}, tọa độ X`} type="number" min="0" step="any" value={position.x ?? ""} onChange={e => updateHolePosition(featureIndex, holeIndex, "x", e.target.value)} />
-                <input disabled={loading || generating} aria-label={`Lỗ ${holeIndex + 1}, tọa độ Y`} type="number" min="0" step="any" value={position.y ?? ""} onChange={e => updateHolePosition(featureIndex, holeIndex, "y", e.target.value)} />
+                <input disabled={loading || generating} aria-label={`Lỗ ${holeIndex + 1}, tọa độ X`} type="number" min="0" step="any" value={position.x ?? ""} onChange={e => updateCutPosition(featureIndex, holeIndex, "x", e.target.value)} />
+                <input disabled={loading || generating} aria-label={`Lỗ ${holeIndex + 1}, tọa độ Y`} type="number" min="0" step="any" value={position.y ?? ""} onChange={e => updateCutPosition(featureIndex, holeIndex, "y", e.target.value)} />
+              </div>)}
+            </div>
+          </fieldset>
+        ) : (
+          <fieldset className="featureEditor" key={feature.id}>
+            <legend>Feature {featureIndex + 1}: Rãnh xuyên bo tròn</legend>
+            <label>Dài tổng thể (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.slot_length ?? ""} onChange={e => updateFeatureNumber(featureIndex, "slot_length", e.target.value)} />
+            </label>
+            <label>Rộng (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.slot_width ?? ""} onChange={e => updateFeatureNumber(featureIndex, "slot_width", e.target.value)} />
+            </label>
+            <label>Trục dài
+              <select disabled={loading || generating} value={feature.orientation ?? "x"} onChange={e => updateSlotOrientation(featureIndex, e.target.value as "x" | "y")}>
+                <option value="x">Theo X</option><option value="y">Theo Y</option>
+              </select>
+            </label>
+            <div className="holeGrid"><strong>Rãnh</strong><strong>Tâm X (mm)</strong><strong>Tâm Y (mm)</strong>
+              {feature.positions?.map((position, slotIndex) => <div className="holeRow" key={slotIndex}>
+                <span>{slotIndex + 1}</span>
+                <input disabled={loading || generating} aria-label={`Rãnh ${slotIndex + 1}, tọa độ X`} type="number" min="0" step="any" value={position.x ?? ""} onChange={e => updateCutPosition(featureIndex, slotIndex, "x", e.target.value)} />
+                <input disabled={loading || generating} aria-label={`Rãnh ${slotIndex + 1}, tọa độ Y`} type="number" min="0" step="any" value={position.y ?? ""} onChange={e => updateCutPosition(featureIndex, slotIndex, "y", e.target.value)} />
               </div>)}
             </div>
           </fieldset>
@@ -223,7 +269,7 @@ export default function App() {
         <details><summary>{edited ? "Ràng buộc sẽ được kiểm tra lại tại máy chủ" : "Ràng buộc đã kiểm tra"}</summary><ul>{plan.constraints.map(item => <li key={item}>{item}</li>)}</ul></details>
         <details><summary>CAD Plan JSON (v{plan.schema_version})</summary><pre>{JSON.stringify(plan, null, 2)}</pre></details>
       </section>}
-      <footer>FreeCAD tạo mô hình trong Space. Bản hiện tại dùng parser xác định, chưa phải AI tổng quát; chỉ hỗ trợ đùn tấm chữ nhật và cắt lỗ xuyên. FCStd hiện chưa có Feature Tree tham số đầy đủ.</footer>
+      <footer>FreeCAD tạo mô hình trong Space. Parser xác định hiện hỗ trợ tấm chữ nhật, 4 lỗ xuyên và rãnh xuyên bo tròn; các hình học khác sẽ được yêu cầu làm rõ hoặc báo chưa hỗ trợ. FCStd hiện lưu một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ.</footer>
     </main>
   );
 }
