@@ -12,7 +12,7 @@ class Hole(BaseModel):
 class Feature(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
-    type: Literal["extruded_plate", "through_holes", "through_slots"]
+    type: Literal["extruded_plate", "through_holes", "through_slots", "rectangular_pockets"]
     length: float | None = Field(default=None, gt=0, le=2000, allow_inf_nan=False)
     width: float | None = Field(default=None, gt=0, le=2000, allow_inf_nan=False)
     thickness: float | None = Field(default=None, gt=0, le=500, allow_inf_nan=False)
@@ -20,15 +20,18 @@ class Feature(BaseModel):
     positions: list[Hole] = Field(default_factory=list, max_length=20)
     slot_length: float | None = Field(default=None, gt=0, le=2000, allow_inf_nan=False)
     slot_width: float | None = Field(default=None, gt=0, le=500, allow_inf_nan=False)
+    pocket_length: float | None = Field(default=None, gt=0, le=2000, allow_inf_nan=False)
+    pocket_width: float | None = Field(default=None, gt=0, le=2000, allow_inf_nan=False)
+    pocket_depth: float | None = Field(default=None, gt=0, le=500, allow_inf_nan=False)
     orientation: Literal["x", "y"] | None = None
 
 
 class CADPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", revalidate_instances="always")
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     part_name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     units: Literal["mm"] = "mm"
-    features: list[Feature] = Field(min_length=1, max_length=3)
+    features: list[Feature] = Field(min_length=1, max_length=4)
     outputs: list[Literal["step", "stl", "fcstd", "pdf"]] = Field(
         default_factory=lambda: ["fcstd", "step", "stl", "pdf"]
     )
@@ -57,27 +60,31 @@ class CADPlan(BaseModel):
         cut_types = [feature.type for feature in self.features[1:]]
         if "extruded_plate" in cut_types:
             raise ValueError("Only one extruded_plate feature is supported")
-        if len(cut_types) != len(set(cut_types)) or any(
-            feature_type not in {"through_holes", "through_slots"} for feature_type in cut_types
-        ):
-            raise ValueError("Only one through_holes and one through_slots feature are supported")
-        if cut_types == ["through_slots", "through_holes"]:
-            raise ValueError("through_holes must precede through_slots in the feature sequence")
+        allowed_cut_order = ["through_holes", "through_slots", "rectangular_pockets"]
+        if len(cut_types) != len(set(cut_types)) or any(feature_type not in allowed_cut_order for feature_type in cut_types):
+            raise ValueError("Only one through_holes, through_slots and rectangular_pockets feature group is supported")
+        if cut_types != [feature_type for feature_type in allowed_cut_order if feature_type in cut_types]:
+            raise ValueError("Feature order must be through_holes, through_slots, then rectangular_pockets")
         base = self.features[0]
         if base.length is None or base.width is None or base.thickness is None:
             raise ValueError("extruded_plate requires length, width, thickness")
-        if any(value is not None for value in (base.diameter, base.slot_length, base.slot_width, base.orientation)) or base.positions:
+        if any(value is not None for value in (
+            base.diameter, base.slot_length, base.slot_width, base.pocket_length,
+            base.pocket_width, base.pocket_depth, base.orientation,
+        )) or base.positions:
             raise ValueError("extruded_plate cannot contain hole parameters or cut parameters; add a cut feature")
         holes_feature = None
         slots_feature = None
+        pockets_feature = None
         for feature in self.features[1:]:
             if feature.type == "through_holes":
                 holes_feature = feature
                 if feature.diameter is None or not feature.positions:
                     raise ValueError("through_holes requires diameter and positions")
                 if any(value is not None for value in (feature.length, feature.width, feature.thickness,
-                                                       feature.slot_length, feature.slot_width, feature.orientation)):
-                    raise ValueError("through_holes cannot contain plate or slot dimensions")
+                                                       feature.slot_length, feature.slot_width, feature.pocket_length,
+                                                       feature.pocket_width, feature.pocket_depth, feature.orientation)):
+                    raise ValueError("through_holes cannot contain plate, slot or pocket dimensions")
                 if feature.diameter >= min(base.length, base.width):
                     raise ValueError("Hole diameter must be smaller than plate dimensions")
                 radius = feature.diameter / 2
@@ -93,15 +100,18 @@ class CADPlan(BaseModel):
                         if math.dist((hole.x, hole.y), (other.x, other.y)) <= feature.diameter:
                             raise ValueError("Through holes must not overlap or touch")
             elif feature.type == "through_slots":
-                if self.schema_version != "1.1":
-                    raise ValueError("through_slots requires CAD Plan schema version 1.1")
+                if self.schema_version not in {"1.1", "1.2"}:
+                    raise ValueError("through_slots requires CAD Plan schema version 1.1 or newer")
                 slots_feature = feature
                 if feature.slot_length is None or feature.slot_width is None or not feature.positions:
                     raise ValueError("through_slots requires slot_length, slot_width and center positions")
                 if feature.orientation not in {"x", "y"}:
                     raise ValueError("through_slots requires orientation 'x' or 'y'")
-                if any(value is not None for value in (feature.length, feature.width, feature.thickness, feature.diameter)):
-                    raise ValueError("through_slots cannot contain plate dimensions or hole diameter")
+                if any(value is not None for value in (
+                    feature.length, feature.width, feature.thickness, feature.diameter,
+                    feature.pocket_length, feature.pocket_width, feature.pocket_depth,
+                )):
+                    raise ValueError("through_slots cannot contain plate, hole or pocket dimensions")
                 if feature.slot_length <= feature.slot_width:
                     raise ValueError("A rounded-end slot length must be greater than its width")
                 if len(set((point.x, point.y) for point in feature.positions)) != len(feature.positions):
@@ -126,6 +136,35 @@ class CADPlan(BaseModel):
                             cross_gap = abs(first.x - second.x)
                         if math.hypot(axis_gap, cross_gap) <= feature.slot_width:
                             raise ValueError("Through slots must not overlap or touch")
+            elif feature.type == "rectangular_pockets":
+                if self.schema_version != "1.2":
+                    raise ValueError("rectangular_pockets requires CAD Plan schema version 1.2")
+                pockets_feature = feature
+                if (feature.pocket_length is None or feature.pocket_width is None or feature.pocket_depth is None
+                        or not feature.positions):
+                    raise ValueError("rectangular_pockets requires length, width, depth and center positions")
+                if any(value is not None for value in (
+                    feature.length, feature.width, feature.thickness, feature.diameter,
+                    feature.slot_length, feature.slot_width, feature.orientation,
+                )):
+                    raise ValueError("rectangular_pockets cannot contain plate, hole or slot dimensions")
+                if feature.pocket_depth >= base.thickness:
+                    raise ValueError("A blind pocket depth must be less than the plate thickness")
+                if len(set((point.x, point.y) for point in feature.positions)) != len(feature.positions):
+                    raise ValueError("Rectangular pocket centers must be unique")
+                half_length = feature.pocket_length / 2
+                half_width = feature.pocket_width / 2
+                for position in feature.positions:
+                    if not (half_length < position.x < base.length - half_length):
+                        raise ValueError("Rectangular pocket X extent lies outside the plate")
+                    if not (half_width < position.y < base.width - half_width):
+                        raise ValueError("Rectangular pocket Y extent lies outside the plate")
+                for index, first in enumerate(feature.positions):
+                    for second in feature.positions[index + 1:]:
+                        gap_x = abs(first.x - second.x) - feature.pocket_length
+                        gap_y = abs(first.y - second.y) - feature.pocket_width
+                        if gap_x <= 0 and gap_y <= 0:
+                            raise ValueError("Rectangular pockets must not overlap or touch")
 
         if holes_feature and slots_feature:
             slot_radius = slots_feature.slot_width / 2
@@ -141,6 +180,31 @@ class CADPlan(BaseModel):
                         cross_delta = abs(hole.x - slot.x)
                     if math.hypot(axis_delta, cross_delta) <= slot_radius + hole_radius:
                         raise ValueError("Through holes must not overlap or touch through slots")
+
+        if pockets_feature:
+            pocket_half_length = pockets_feature.pocket_length / 2
+            pocket_half_width = pockets_feature.pocket_width / 2
+            if holes_feature:
+                hole_radius = holes_feature.diameter / 2
+                for pocket in pockets_feature.positions:
+                    for hole in holes_feature.positions:
+                        gap_x = max(0.0, abs(hole.x - pocket.x) - pocket_half_length)
+                        gap_y = max(0.0, abs(hole.y - pocket.y) - pocket_half_width)
+                        if math.hypot(gap_x, gap_y) <= hole_radius:
+                            raise ValueError("Rectangular pockets must not overlap or touch through holes")
+            if slots_feature:
+                slot_radius = slots_feature.slot_width / 2
+                slot_centerline_half = (slots_feature.slot_length - slots_feature.slot_width) / 2
+                for pocket in pockets_feature.positions:
+                    for slot in slots_feature.positions:
+                        if slots_feature.orientation == "x":
+                            gap_x = max(0.0, abs(slot.x - pocket.x) - pocket_half_length - slot_centerline_half)
+                            gap_y = max(0.0, abs(slot.y - pocket.y) - pocket_half_width)
+                        else:
+                            gap_x = max(0.0, abs(slot.x - pocket.x) - pocket_half_length)
+                            gap_y = max(0.0, abs(slot.y - pocket.y) - pocket_half_width - slot_centerline_half)
+                        if math.hypot(gap_x, gap_y) <= slot_radius:
+                            raise ValueError("Rectangular pockets must not overlap or touch through slots")
 
         # These fields are always recomputed from the validated features. A client
         # cannot make stale preview metadata authoritative by editing it.
@@ -159,6 +223,12 @@ class CADPlan(BaseModel):
             self.parameters["slot_width_mm"] = slots_feature.slot_width
             self.parameters["slot_count"] = float(len(slots_feature.positions))
             self.constraints.extend(["slots_inside_plate", "slots_non_overlapping", "slots_clear_of_holes", "slots_through_all"])
+        if pockets_feature:
+            self.parameters["pocket_length_mm"] = pockets_feature.pocket_length
+            self.parameters["pocket_width_mm"] = pockets_feature.pocket_width
+            self.parameters["pocket_depth_mm"] = pockets_feature.pocket_depth
+            self.parameters["pocket_count"] = float(len(pockets_feature.positions))
+            self.constraints.extend(["pockets_inside_plate", "pockets_non_overlapping", "pockets_clear_of_through_cuts", "pockets_blind"])
         self.validation = "passed"
         return self
 

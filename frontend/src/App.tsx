@@ -3,7 +3,7 @@ import { useState } from "react";
 type Position = { x?: number; y?: number };
 type Feature = {
   id: string;
-  type: "extruded_plate" | "through_holes" | "through_slots";
+  type: "extruded_plate" | "through_holes" | "through_slots" | "rectangular_pockets";
   length?: number | null;
   width?: number | null;
   thickness?: number | null;
@@ -11,6 +11,9 @@ type Feature = {
   positions?: Position[];
   slot_length?: number | null;
   slot_width?: number | null;
+  pocket_length?: number | null;
+  pocket_width?: number | null;
+  pocket_depth?: number | null;
   orientation?: "x" | "y" | null;
 };
 type Plan = {
@@ -52,6 +55,17 @@ function deriveParameters(features: Feature[]) {
       if (position.y !== undefined) result[`slot_${index + 1}_y_mm`] = position.y;
     });
   }
+  const pockets = features.find(feature => feature.type === "rectangular_pockets");
+  if (pockets?.pocket_length !== null && pockets?.pocket_length !== undefined) result.pocket_length_mm = pockets.pocket_length;
+  if (pockets?.pocket_width !== null && pockets?.pocket_width !== undefined) result.pocket_width_mm = pockets.pocket_width;
+  if (pockets?.pocket_depth !== null && pockets?.pocket_depth !== undefined) result.pocket_depth_mm = pockets.pocket_depth;
+  if (pockets?.positions) {
+    result.pocket_count = pockets.positions.length;
+    pockets.positions.forEach((position, index) => {
+      if (position.x !== undefined) result[`pocket_${index + 1}_x_mm`] = position.x;
+      if (position.y !== undefined) result[`pocket_${index + 1}_y_mm`] = position.y;
+    });
+  }
   return result;
 }
 
@@ -75,7 +89,7 @@ export default function App() {
 
   function updateFeatureNumber(
     featureIndex: number,
-    field: "length" | "width" | "thickness" | "diameter" | "slot_length" | "slot_width",
+    field: "length" | "width" | "thickness" | "diameter" | "slot_length" | "slot_width" | "pocket_length" | "pocket_width" | "pocket_depth",
     rawValue: string
   ) {
     const value = rawValue === "" ? undefined : Number(rawValue);
@@ -189,7 +203,7 @@ export default function App() {
 
       <section className="panel">
         <h2>Mô tả chi tiết cơ khí</h2>
-        <p className="muted">Hỗ trợ tấm chữ nhật, 4 lỗ xuyên và rãnh xuyên hai đầu bo tròn. Hãy ghi rõ kích thước, vị trí rãnh và rà soát CAD Plan trước khi tạo.</p>
+        <p className="muted">Hỗ trợ tấm chữ nhật, 4 lỗ xuyên, rãnh xuyên bo tròn và hốc chữ nhật mù. Hãy ghi rõ kích thước, độ sâu, vị trí tâm và rà soát CAD Plan trước khi tạo.</p>
         <label htmlFor="description">Yêu cầu thiết kế</label>
         <textarea id="description" disabled={loading || generating} value={description} onChange={e => { setDescription(e.target.value); clearPreview(); }} rows={4} />
         <label htmlFor="partName">Tên chi tiết / file</label>
@@ -241,7 +255,7 @@ export default function App() {
               </div>)}
             </div>
           </fieldset>
-        ) : (
+        ) : feature.type === "through_slots" ? (
           <fieldset className="featureEditor" key={feature.id}>
             <legend>Feature {featureIndex + 1}: Rãnh xuyên bo tròn</legend>
             <label>Dài tổng thể (mm)
@@ -263,13 +277,33 @@ export default function App() {
               </div>)}
             </div>
           </fieldset>
+        ) : (
+          <fieldset className="featureEditor" key={feature.id}>
+            <legend>Feature {featureIndex + 1}: Hốc chữ nhật mù</legend>
+            <label>Dài theo X (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.pocket_length ?? ""} onChange={e => updateFeatureNumber(featureIndex, "pocket_length", e.target.value)} />
+            </label>
+            <label>Rộng theo Y (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.pocket_width ?? ""} onChange={e => updateFeatureNumber(featureIndex, "pocket_width", e.target.value)} />
+            </label>
+            <label>Độ sâu từ mặt trên (mm)
+              <input disabled={loading || generating} type="number" min="0" step="any" value={feature.pocket_depth ?? ""} onChange={e => updateFeatureNumber(featureIndex, "pocket_depth", e.target.value)} />
+            </label>
+            <div className="holeGrid"><strong>Hốc</strong><strong>Tâm X (mm)</strong><strong>Tâm Y (mm)</strong>
+              {feature.positions?.map((position, pocketIndex) => <div className="holeRow" key={pocketIndex}>
+                <span>{pocketIndex + 1}</span>
+                <input disabled={loading || generating} aria-label={`Hốc ${pocketIndex + 1}, tọa độ X`} type="number" min="0" step="any" value={position.x ?? ""} onChange={e => updateCutPosition(featureIndex, pocketIndex, "x", e.target.value)} />
+                <input disabled={loading || generating} aria-label={`Hốc ${pocketIndex + 1}, tọa độ Y`} type="number" min="0" step="any" value={position.y ?? ""} onChange={e => updateCutPosition(featureIndex, pocketIndex, "y", e.target.value)} />
+              </div>)}
+            </div>
+          </fieldset>
         ))}
         {plan.assumptions.length > 0 && <div><h3>Giả định</h3><ul>{plan.assumptions.map(item => <li key={item}>{item}</li>)}</ul></div>}
         {plan.warnings.length > 0 && <div className="warning"><h3>Cảnh báo</h3><ul>{plan.warnings.map(item => <li key={item}>{item}</li>)}</ul></div>}
         <details><summary>{edited ? "Ràng buộc sẽ được kiểm tra lại tại máy chủ" : "Ràng buộc đã kiểm tra"}</summary><ul>{plan.constraints.map(item => <li key={item}>{item}</li>)}</ul></details>
         <details><summary>CAD Plan JSON (v{plan.schema_version})</summary><pre>{JSON.stringify(plan, null, 2)}</pre></details>
       </section>}
-      <footer>FreeCAD tạo mô hình trong Space. Parser xác định hiện hỗ trợ tấm chữ nhật, 4 lỗ xuyên và rãnh xuyên bo tròn; các hình học khác sẽ được yêu cầu làm rõ hoặc báo chưa hỗ trợ. FCStd hiện lưu một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ.</footer>
+      <footer>FreeCAD tạo mô hình trong Space. Parser xác định hiện hỗ trợ tấm chữ nhật, 4 lỗ xuyên, rãnh xuyên bo tròn và hốc chữ nhật mù. Các hình học khác sẽ được yêu cầu làm rõ hoặc báo chưa hỗ trợ. FCStd hiện lưu một solid cùng thuộc tính kích thước, chưa có Feature Tree tham số đầy đủ.</footer>
     </main>
   );
 }

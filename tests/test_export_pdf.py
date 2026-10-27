@@ -69,4 +69,25 @@ def test_pdf_shows_slot_opening_and_dimensions(tmp_path):
     assert pdf.startswith(b"%PDF-")
     assert b"Through slots: 1 x 30 x 8 mm; axis X" in pdf
     assert b"S1 center: X 50, Y 30 mm" in pdf
-    assert b"through-cut boundaries hidden in edge views" in pdf
+    assert b"cut boundaries hidden in edge views" in pdf
+
+
+def test_pdf_shows_blind_pocket_in_isometric_and_views(tmp_path):
+    plan = _plate_plan()
+    plan["features"].append({
+        "id": "pockets",
+        "type": "rectangular_pockets",
+        "pocket_length": 30,
+        "pocket_width": 15,
+        "pocket_depth": 2,
+        "positions": [{"x": 50, "y": 30}],
+    })
+    destination = tmp_path / "pocketed-plate-drawing.pdf"
+
+    export_dimension_pdf(plan, str(destination))
+
+    pdf = destination.read_bytes()
+    assert pdf.startswith(b"%PDF-")
+    assert b"Blind rectangular pockets: 1 x 30 x 15 mm; depth 2 mm" in pdf
+    assert b"P1 center: X 50, Y 30 mm" in pdf
+    assert b"Dashed edges indicate cut boundaries hidden in edge views." in pdf
