@@ -17,7 +17,7 @@ Nhập mô tả cơ khí bằng tiếng Việt để tạo gói file CAD ngay tr
 - `.FCStd`: tài liệu FreeCAD có thể mở và chỉnh sửa; executor hiện lưu một `Part::Feature` cùng thuộc tính kích thước, chưa phải Feature Tree tham số đầy đủ.
 - `.step`: trao đổi mô hình 3D.
 - `.stl`: mô hình lưới cho in 3D.
-- `.pdf`: bản vẽ kích thước 2D sơ bộ (không phải bản vẽ chứng nhận sản xuất).
+- `.pdf`: bản vẽ sơ bộ gồm hình trục đo 3D, hình chiếu vuông góc sáu mặt và hình chiếu trên có kích thước (không phải bản vẽ chứng nhận sản xuất).
 
 ## Phạm vi hiện tại
 
