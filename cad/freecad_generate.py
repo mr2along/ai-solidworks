@@ -30,6 +30,18 @@ def _cylindrical_centers(shape, radius, tolerance):
     return centers
 
 
+def _unique_xy(points, tolerance):
+    unique = []
+    for x, y in points:
+        if not any(
+            math.isclose(x, existing_x, rel_tol=0.0, abs_tol=tolerance)
+            and math.isclose(y, existing_y, rel_tol=0.0, abs_tol=tolerance)
+            for existing_x, existing_y in unique
+        ):
+            unique.append((x, y))
+    return unique
+
+
 def validate_shape(shape, length, width, thickness, holes_feature, slots_feature=None):
     if shape.isNull() or not shape.isValid() or shape.Volume <= 0:
         raise RuntimeError("FreeCAD produced an invalid or empty solid.")
@@ -75,13 +87,13 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
     if slots_feature:
         expected_cylinders.setdefault(float(slots_feature["slot_width"]) / 2.0, []).extend(expected_slot_centers)
     for radius, expected_centers in expected_cylinders.items():
-        actual_centers = _cylindrical_centers(shape, radius, tolerance)
+        actual_faces = _cylindrical_centers(shape, radius, tolerance)
+        actual_centers = _unique_xy(((center.x, center.y) for center in actual_faces), tolerance)
+        expected_centers = _unique_xy(expected_centers, tolerance)
         if len(actual_centers) != len(expected_centers):
-            actual = [(round(center.x, 6), round(center.y, 6), round(center.z, 6)) for center in actual_centers]
             raise RuntimeError(
-                "Generated through-cut cylindrical face count does not match the CAD plan "
-                f"(radius={radius:g}, expected={len(expected_centers)}, actual={len(actual_centers)}, "
-                f"expected_centers={expected_centers}, actual_centers={actual})."
+                "Generated through-cut center count does not match the CAD plan "
+                f"(radius={radius:g}, expected={expected_centers}, actual={actual_centers})."
             )
         unmatched = list(actual_centers)
         for x, y in expected_centers:
@@ -89,8 +101,8 @@ def validate_shape(shape, length, width, thickness, holes_feature, slots_feature
                 (
                     index
                     for index, center in enumerate(unmatched)
-                    if math.isclose(center.x, x, rel_tol=0.0, abs_tol=tolerance)
-                    and math.isclose(center.y, y, rel_tol=0.0, abs_tol=tolerance)
+                    if math.isclose(center[0], x, rel_tol=0.0, abs_tol=tolerance)
+                    and math.isclose(center[1], y, rel_tol=0.0, abs_tol=tolerance)
                 ),
                 None,
             )
