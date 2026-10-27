@@ -33,7 +33,7 @@ curl -fsS http://127.0.0.1:7860/api/health/cad
 plan_status="$(curl -sS -w '%{http_code}' -o "$plan_file" \
   -X POST http://127.0.0.1:7860/api/plan \
   -H 'Content-Type: application/json' \
-  -d '{"description":"Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm","part_name":"ci_plate"}')"
+  -d '{"description":"Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm, rãnh xuyên dài 30 mm rộng 8 mm ở giữa tấm theo chiều dài","part_name":"ci_plate"}')"
 if [ "$plan_status" != "200" ]; then
   echo "::error::POST /api/plan returned HTTP $plan_status"
   cat "$plan_file"

@@ -43,8 +43,10 @@ def validate_archive(path: str) -> None:
     pdf = files["ci_plate.pdf"]
     if not pdf.startswith(b"%PDF-") or b"%%EOF" not in pdf[-1024:]:
         raise ValueError("PDF export is incomplete")
+    if b"Through slots: 1 x 30 x 8 mm; axis X" not in pdf:
+        raise ValueError("PDF drawing does not document the planned rounded through-slot")
 
-    print("Verified FCStd, STEP, STL and PDF artifact contents")
+    print("Verified FCStd, STEP, STL and PDF artifact contents, including the through-slot drawing")
 
 
 if __name__ == "__main__":

@@ -10,9 +10,119 @@ def test_four_hole_plate_plan():
         "mounting_plate",
     )
     assert plan.part_name == "mounting_plate"
+    assert plan.schema_version == "1.1"
     assert plan.features[0].length == 100
     assert len(plan.features[1].positions) == 4
     assert plan.outputs == ["fcstd", "step", "stl", "pdf"]
+
+
+def test_centered_through_slot_is_combined_with_existing_hole_pattern():
+    plan = plan_from_description(
+        "Vẽ tấm dài 100 mm rộng 60 mm dày 5 mm, 4 lỗ Ø6 cách mép 10 mm và "
+        "rãnh xuyên dài 30 mm rộng 8 mm ở giữa tấm theo chiều dài",
+        "slotted_plate",
+    )
+
+    assert [feature.type for feature in plan.features] == ["extruded_plate", "through_holes", "through_slots"]
+    slot = plan.features[2]
+    assert slot.slot_length == 30
+    assert slot.slot_width == 8
+    assert slot.orientation == "x"
+    assert slot.positions[0].x == 50
+    assert slot.positions[0].y == 30
+    assert "slots_clear_of_holes" in plan.constraints
+
+
+def test_english_slot_plan_supports_explicit_units_and_axis():
+    plan = plan_from_description(
+        "Make a plate length 10 cm, width 60 mm, thickness 5 mm with a through slot "
+        "length 3 cm width 8 mm centered in the plate along the plate length",
+        "english_slotted_plate",
+    )
+
+    assert len(plan.features) == 2
+    slot = plan.features[1]
+    assert slot.slot_length == 30
+    assert slot.slot_width == 8
+    assert slot.orientation == "x"
+    assert slot.positions[0].model_dump() == {"x": 50, "y": 30}
+    assert not any("Hướng rãnh không ghi rõ" in assumption for assumption in plan.assumptions)
+
+
+def test_slot_accepts_explicit_center_coordinates_and_y_axis():
+    plan = plan_from_description(
+        "Plate length 100 mm, width 60 mm, thickness 5 mm with through slot length 20 mm "
+        "width 6 mm, slot center at x=35 mm, y=25 mm, along Y"
+    )
+
+    slot = plan.features[1]
+    assert slot.orientation == "y"
+    assert slot.positions[0].model_dump() == {"x": 35, "y": 25}
+
+
+def test_slot_requires_a_stated_center_or_coordinates():
+    with pytest.raises(ValueError, match="cần có tâm X/Y"):
+        plan_from_description(
+            "Plate length 100 mm, width 60 mm, thickness 5 mm with a through slot length 30 mm width 8 mm"
+        )
+
+
+def test_slot_geometry_rejects_outside_and_colliding_features():
+    base = {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5}
+    slot = {
+        "id": "slot", "type": "through_slots", "slot_length": 30, "slot_width": 8,
+        "orientation": "x", "positions": [{"x": 50, "y": 30}],
+    }
+    with pytest.raises(ValidationError, match="extent lies outside"):
+        CADPlan.model_validate({"part_name": "outside_slot", "features": [base, {**slot, "positions": [{"x": 10, "y": 30}]}]})
+
+    with pytest.raises(ValidationError, match="must not overlap or touch through slots"):
+        CADPlan.model_validate({
+            "part_name": "slot_hole_collision",
+            "features": [
+                base,
+                {"id": "holes", "type": "through_holes", "diameter": 6, "positions": [{"x": 50, "y": 30}]},
+                slot,
+            ],
+        })
+
+
+def test_slot_dimensions_and_unsupported_blind_slot_are_rejected():
+    with pytest.raises(ValidationError, match="length must be greater than its width"):
+        CADPlan.model_validate({
+            "part_name": "bad_slot",
+            "features": [
+                {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+                {"id": "slot", "type": "through_slots", "slot_length": 8, "slot_width": 8,
+                 "orientation": "x", "positions": [{"x": 50, "y": 30}]},
+            ],
+        })
+    with pytest.raises(ValueError, match="chưa được hỗ trợ"):
+        plan_from_description(
+            "Plate length 100 mm width 60 mm thickness 5 mm with a blind slot length 30 mm width 8 mm"
+        )
+
+
+def test_schema_v10_remains_compatible_for_existing_plate_plans():
+    plan = CADPlan.model_validate({
+        "schema_version": "1.0",
+        "part_name": "legacy_plate",
+        "features": [
+            {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+        ],
+    })
+    assert plan.schema_version == "1.0"
+
+    with pytest.raises(ValidationError, match="requires CAD Plan schema version 1.1"):
+        CADPlan.model_validate({
+            "schema_version": "1.0",
+            "part_name": "legacy_slot",
+            "features": [
+                {"id": "base", "type": "extruded_plate", "length": 100, "width": 60, "thickness": 5},
+                {"id": "slot", "type": "through_slots", "slot_length": 30, "slot_width": 8,
+                 "orientation": "x", "positions": [{"x": 50, "y": 30}]},
+            ],
+        })
 
 
 def test_reject_hole_outside_plate():
